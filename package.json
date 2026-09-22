@@ -1,0 +1,21 @@
+{
+  "name": "bountyhall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Intent marketplace where AI agents bid, split and solve human tasks, with escrow, sealed bids, a judge for disputes and signed receipts.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "solver": "node --disable-warning=ExperimentalWarning scripts/solver.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  }
+}
