@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { openDb } from './db.js';
-import { Market } from './market.js';
+import { Market, SYS } from './market.js';
 import { judgeDispute, judgeEnabled } from './judge.js';
 import { HttpError, MINUTE } from './util.js';
 import * as views from './views.js';
@@ -14,6 +14,11 @@ import { handleRpc } from './mcp.js';
 import { createDispatcher, validateWebhookUrl } from './webhooks.js';
 import { Payments, paymentsConfigFromEnv } from './payments.js';
 import { createChain } from './chain.js';
+import { HouseAgent } from './house-agent.js';
+import { claudeEnabled, MODEL } from './claude.js';
+
+const VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version;
+const STARTED = Date.now();
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC = {
@@ -36,8 +41,9 @@ function limiter(max, windowMs) {
   };
 }
 
-export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, judge = judgeDispute, webhooks = {}, payments: payOpts = {} } = {}) {
-  const db = openDb(dbFile);
+export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, judge = judgeDispute, webhooks = {}, payments: payOpts = {}, house: houseOpts = {} } = {}) {
+  const dbPath = dbFile ?? process.env.BOUNTYHALL_DB ?? 'data/bountyhall.db';
+  const db = openDb(dbPath);
   const payCfg = payOpts.config ?? paymentsConfigFromEnv();
   const tokenMode = payCfg.mode === 'token';
   // in token mode every credit must be backed by a deposit, so there is no signup faucet
@@ -48,6 +54,20 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
   const poller = payments && pollMs ? setInterval(() => payments.poll(), pollMs) : null;
   poller?.unref();
   if (payments && pollMs) payments.poll();
+
+  // the house agent: on with HOUSE_AGENT=1 and a Claude key, or when a test passes its own `ask`
+  const houseOn = houseOpts.ask ? true : houseOpts.enabled ?? (process.env.HOUSE_AGENT === '1' && claudeEnabled());
+  const house = houseOn ? new HouseAgent(market, {
+    name: process.env.HOUSE_AGENT_NAME || 'house-agent',
+    maxBudget: Number(process.env.HOUSE_AGENT_MAX_BUDGET || Infinity),
+    discount: Number(process.env.HOUSE_AGENT_DISCOUNT || 0.8),
+    ...(houseOpts.ask ? { ask: houseOpts.ask } : {}),
+  }) : null;
+  const houseState = { last: null, at: null };
+  const houseTick = async () => { houseState.last = await house.tick(); houseState.at = Date.now(); return houseState.last; };
+  const houseMs = houseOpts.intervalMs ?? Number(process.env.HOUSE_AGENT_MS ?? 60000);
+  const houseTimer = house && houseMs ? setInterval(() => houseTick().catch(() => {}), houseMs) : null;
+  houseTimer?.unref();
   const adminToken = process.env.ADMIN_TOKEN || '';
   const signupLimit = limiter(Number(process.env.SIGNUP_PER_HOUR ?? 10), 60 * MINUTE);
   const writeLimit = limiter(Number(process.env.WRITES_PER_MINUTE ?? 60), MINUTE);
@@ -76,6 +96,33 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
   const sweeper = sweepMs ? setInterval(() => { try { market.sweep(); } catch (e) { console.error('[sweep]', e); } }, sweepMs) : null;
   sweeper?.unref();
 
+  // A configuration checklist for the admin desk: what works, what is missing.
+  async function health() {
+    const check = (item, ok, detail, level = 'error') => ({ item, ok: Boolean(ok), level: ok ? 'ok' : level, detail });
+    const onVolume = dbPath === ':memory:' ? false : dbPath.startsWith('/app/data') || dbPath.startsWith('data/');
+    const checks = [
+      check('Admin token', adminToken.length >= 24, adminToken.length >= 24 ? 'set' : `only ${adminToken.length} characters; use a long random value`, 'warn'),
+      check('Public URL', process.env.PUBLIC_URL, process.env.PUBLIC_URL || 'PUBLIC_URL is not set; links in solver.md fall back to the Host header', 'warn'),
+      check('Database', onVolume, `${dbPath}${onVolume ? '' : ' (not under /app/data)'} — mount a Railway volume at /app/data or data is lost on redeploy`, 'warn'),
+      check('Dispute judge', claudeEnabled(), claudeEnabled() ? `Claude (${MODEL})` : 'no ANTHROPIC_API_KEY: disputes wait for an admin ruling', 'warn'),
+      check('House agent', house, house ? `${house.me.name}, last run ${houseState.at ? new Date(houseState.at).toISOString() : 'not yet'}${houseState.last?.error ? `, error: ${houseState.last.error}` : ''}` : 'off: set HOUSE_AGENT=1 (needs ANTHROPIC_API_KEY) so new intents always get a bid', 'warn'),
+    ];
+    if (payments) {
+      const t = await payments.treasury().catch((e) => ({ last_error: e.message }));
+      const gas = t.gas_balance_wei ? BigInt(t.gas_balance_wei) : null;
+      checks.push(
+        check('Chain connection', payments.ready && !payments.lastError, payments.ready ? `${payCfg.chainName} (${payCfg.chainId}), scanned to block ${t.cursor_block ?? '—'}${payments.lastError ? `; last error: ${payments.lastError}` : ''}` : `not connected: ${payments.lastError || 'checking'}`),
+        check('Hot wallet key', payments.chain.canSend, payments.chain.canSend ? `treasury ${payments.chain.treasury}` : 'HOT_WALLET_PRIVATE_KEY is not set: deposits work, withdrawals cannot be sent'),
+        check('Gas for withdrawals', gas != null && gas >= 10n ** 15n, gas == null ? 'unknown' : `${Number(gas / 10n ** 12n) / 1e6} ETH`, 'warn'),
+        check('Solvency', t.solvent, t.solvent == null ? 'unknown' : `${t.onchain_balance} on-chain vs ${t.owed_total} owed`),
+        check('RPC endpoint', !payCfg.rpcUrl.includes('rpc.mainnet.chain.robinhood.com'), payCfg.rpcUrl.includes('rpc.mainnet.chain.robinhood.com') ? 'public, rate-limited RPC: use a provider for production' : 'custom provider', 'warn'),
+      );
+    } else {
+      checks.push(check('Payments', true, 'test credits (set PAYMENTS=token to settle in MUSEBOOK)'));
+    }
+    return { version: VERSION, uptime_s: Math.round((Date.now() - STARTED) / 1000), payments: payments ? 'token' : 'credits', ok: checks.every((c) => c.level !== 'error'), checks };
+  }
+
   const pay = () => {
     if (!payments) throw new HttpError(404, 'on-chain payments are not enabled on this server', 'payments_disabled');
     return payments;
@@ -103,7 +150,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     })],
     ['GET', /^\/api\/accounts\/([^/]+)$/, ({ params }) => found(market.accountByName(decodeURIComponent(params[0])), 'account')],
     ['GET', /^\/api\/leaderboard$/, () => ({ agents: market.leaderboard() })],
-    ['GET', /^\/api\/stats$/, () => ({ ...market.stats(), judge: judgeEnabled() ? 'claude' : 'admin' })],
+    ['GET', /^\/api\/stats$/, () => ({ ...market.stats(), judge: judgeEnabled() ? 'claude' : 'admin', house_agent: house ? house.me.name : null, version: VERSION })],
     ['GET', /^\/api\/intents$/, ({ query }) => ({ intents: market.listIntents({ status: query.get('status') || undefined, tag: query.get('tag') || undefined, q: query.get('q') || undefined, limit: query.get('limit') }) })],
     ['POST', /^\/api\/intents$/, ({ me, body }) => [201, market.createIntent(need(me), body)]],
     ['GET', /^\/api\/intents\/([^/]+)$/, ({ me, params }) => market.intent(params[0], me)],
@@ -151,6 +198,18 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     ['POST', /^\/api\/admin\/withdrawals\/([^/]+)\/rebroadcast$/, ({ req, params }) => { admin(req); return pay().rebroadcast(params[0]); }],
     ['POST', /^\/api\/admin\/withdrawals\/([^/]+)\/refund$/, ({ req, params }) => { admin(req); return pay().refundDropped(params[0]); }],
     ['POST', /^\/api\/admin\/chain\/poll$/, ({ req }) => { admin(req); return pay().poll(); }],
+    ['POST', /^\/api\/admin\/payout$/, ({ req, body }) => {
+      admin(req);
+      const source = body.source === 'house-agent' ? house?.me.id : body.source === 'fees' ? SYS.fees : null;
+      if (!source) throw new HttpError(400, "source must be 'fees' or 'house-agent'", 'invalid_input');
+      return [201, pay().requestOperatorWithdrawal(source, body)];
+    }],
+    ['POST', /^\/api\/admin\/house\/tick$/, async ({ req }) => {
+      admin(req);
+      if (!house) throw new HttpError(404, 'the house agent is off (set HOUSE_AGENT=1 and ANTHROPIC_API_KEY)', 'house_off');
+      return houseTick();
+    }],
+    ['GET', /^\/api\/admin\/health$/, async ({ req }) => { admin(req); return health(); }],
   ];
 
   const pages = [
@@ -261,9 +320,9 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
   const server = createServer((req, res) => {
     handle(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, 'internal error', 'text/plain'); });
   });
-  server.on('close', () => { if (sweeper) clearInterval(sweeper); if (poller) clearInterval(poller); for (const s of streams) s.end(); db.close(); });
+  server.on('close', () => { if (sweeper) clearInterval(sweeper); if (poller) clearInterval(poller); if (houseTimer) clearInterval(houseTimer); for (const s of streams) s.end(); db.close(); });
   const settleWebhooks = () => Promise.all([...webhookJobs]);
-  return { server, market, db, payments, settleWebhooks };
+  return { server, market, db, payments, house, houseTick, settleWebhooks };
 }
 
 function need(me) {

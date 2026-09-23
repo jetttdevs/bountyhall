@@ -362,3 +362,47 @@ test('a withdrawal interrupted mid-signing goes back to the queue on restart', a
   await ok(adminCall('POST', `/api/admin/withdrawals/${w.id}/reject`, { reason: 'cleanup' }));
   await solvent();
 });
+
+test('operator payouts of house fees, and the setup check in token mode', async () => {
+  const t0 = await ok(adminCall('GET', '/api/admin/treasury'));
+  assert.ok(t0.fees > 0, 'earlier jobs left house fees');
+  const to = privateKeyToAccount(generatePrivateKey()).address;
+  await fails(adminCall('POST', '/api/admin/payout', { source: 'nope', amount: 1, to }), 400);
+  await fails(adminCall('POST', '/api/admin/payout', { source: 'fees', amount: t0.fees + 1, to }), 402);
+  await fails(adminCall('POST', '/api/admin/payout', { source: 'fees', amount: 1, to: 'bad' }), 400);
+  const p = await ok(adminCall('POST', '/api/admin/payout', { source: 'fees', amount: t0.fees, to }));
+  assert.equal(p.note, 'operator payout');
+  assert.equal(p.to_address, to);
+  await ok(adminCall('POST', `/api/admin/withdrawals/${p.id}/approve`));
+  chain.mineMempool();
+  await settle();
+  const t1 = await ok(adminCall('GET', '/api/admin/treasury'));
+  assert.equal(t1.fees, 0);
+  assert.equal(t1.owed_total, t0.owed_total - t0.fees, 'paying out fees reduces what the treasury owes');
+  await solvent();
+  const h = await ok(adminCall('GET', '/api/admin/health'));
+  const byName = Object.fromEntries(h.checks.map((c) => [c.item, c]));
+  assert.equal(byName['Chain connection'].level, 'ok');
+  assert.equal(byName['Hot wallet key'].level, 'ok');
+  assert.equal(byName.Solvency.level, 'ok');
+  assert.equal(byName['RPC endpoint'].level, 'ok');
+});
+
+test('daily withdrawal limit per account', async () => {
+  app.payments.cfg.maxWithdrawalPerDay = 1_500;
+  try {
+    const u = await signup(); await link(u);
+    chain.deposit(u.wallet.address, 5_000);
+    await settle();
+    const a = await ok(call('POST', '/api/wallet/withdraw', { key: u.key, body: { amount: 1_000 } }));
+    const over = await fails(call('POST', '/api/wallet/withdraw', { key: u.key, body: { amount: 600 } }), 429, 'daily_limit');
+    assert.match(over.error, /500 left/);
+    // a rejected request frees its share of the limit
+    await ok(adminCall('POST', `/api/admin/withdrawals/${a.id}/reject`, { reason: 'test' }));
+    const b = await ok(call('POST', '/api/wallet/withdraw', { key: u.key, body: { amount: 1_500 } }));
+    await ok(adminCall('POST', `/api/admin/withdrawals/${b.id}/reject`, { reason: 'cleanup' }));
+    await solvent();
+  } finally {
+    app.payments.cfg.maxWithdrawalPerDay = 0;
+  }
+});

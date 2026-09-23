@@ -294,7 +294,8 @@ function initAdmin() {
 async function renderAdmin() {
   const box = $('#admin');
   const tokenMode = box.dataset.tokenMode === '1';
-  const [{ disputes }, treasury, wd] = await Promise.all([
+  const [health, { disputes }, treasury, wd] = await Promise.all([
+    adminApi('GET', '/api/admin/health'),
     adminApi('GET', '/api/admin/disputes'),
     tokenMode ? adminApi('GET', '/api/admin/treasury') : null,
     tokenMode ? adminApi('GET', '/api/admin/withdrawals') : null,
@@ -303,6 +304,10 @@ async function renderAdmin() {
   box.classList.remove('hidden');
   const when = (t) => new Date(t).toLocaleString();
   const parts = [];
+  const icon = { ok: '<b class="pos">✓</b>', warn: '<b class="warnc">!</b>', error: '<b class="neg">✗</b>' };
+  parts.push(`<section class="panel"><h2>Setup check ${health.ok ? '<span class="pos small">ready</span>' : '<span class="neg small">needs attention</span>'}</h2>
+    <table class="checks"><tbody>${health.checks.map((c) => `<tr><td>${icon[c.level]}</td><td><b>${esc(c.item)}</b></td><td class="small">${esc(c.detail)}</td></tr>`).join('')}</tbody></table>
+    <p class="small muted">Version ${esc(health.version)} · up ${Math.round(health.uptime_s / 60)} min · <button class="btn small ghost" data-admin="house">Run the house agent now</button></p></section>`);
   if (treasury) {
     const t = treasury;
     parts.push(`<section class="panel"><h2>Treasury</h2>
@@ -316,7 +321,12 @@ async function renderAdmin() {
         <div><b>${t.fees.toLocaleString('en-US')}</b><span>house fees</span></div>
       </section>
       <p class="small muted">Gas balance: ${t.gas_balance_wei ? (Number(BigInt(t.gas_balance_wei) / 10n ** 12n) / 1e6).toFixed(6) + ' ETH' : '—'} · unclaimed deposits: ${t.unclaimed_deposits} · unbacked signup credits: ${t.unbacked_signup_credits} · scanned to block ${esc(t.cursor_block ?? '—')}</p>
-      <button class="btn small ghost" data-admin="poll">Scan the chain now</button></section>`);
+      <button class="btn small ghost" data-admin="poll">Scan the chain now</button>
+      <h3>Pay out house earnings</h3>
+      <div class="row gap wrap-row"><label>From<select id="payout-source"><option value="fees">house fees (${t.fees.toLocaleString('en-US')})</option><option value="house-agent">house agent earnings</option></select></label>
+      <label>Amount<input id="payout-amount" type="number" min="1" step="1"></label><label>To address<input id="payout-to" placeholder="0x…"></label>
+      <button class="btn small" data-admin="payout">Queue payout</button></div>
+      <p class="small muted">Payouts join the withdrawal queue below; approve them there.</p></section>`);
     const open = wd.withdrawals.filter((w) => ['pending', 'signing', 'sending'].includes(w.status));
     const done = wd.withdrawals.filter((w) => !['pending', 'signing', 'sending'].includes(w.status)).slice(0, 30);
     const row = (w) => `<tr><td>${when(w.created_at)}</td><td><a href="/u/${esc(w.account_name)}">${esc(w.account_name)}</a><div class="small muted">wallet linked ${w.wallet_linked_at ? when(w.wallet_linked_at) : '—'}</div></td>
@@ -343,6 +353,8 @@ document.addEventListener('click', async (ev) => {
   try {
     if (action === 'logout') { adminStore.set(''); location.reload(); return; }
     if (action === 'poll') await adminApi('POST', '/api/admin/chain/poll');
+    if (action === 'house') { const r = await adminApi('POST', '/api/admin/house/tick'); alert(`House agent: ${r.bids ?? 0} bids, ${r.passes ?? 0} passed, ${r.deliveries ?? 0} delivered${r.error ? `, error: ${r.error}` : ''}`); }
+    if (action === 'payout') await adminApi('POST', '/api/admin/payout', { source: $('#payout-source').value, amount: Number($('#payout-amount').value), to: $('#payout-to').value.trim() });
     if (action === 'approve' && confirm('Sign and send this transfer from the hot wallet?')) await adminApi('POST', `/api/admin/withdrawals/${id}/approve`);
     if (action === 'reject') { const reason = prompt('Reason for rejecting (the user sees this):'); if (reason) await adminApi('POST', `/api/admin/withdrawals/${id}/reject`, { reason }); }
     if (action === 'rebroadcast') await adminApi('POST', `/api/admin/withdrawals/${id}/rebroadcast`);

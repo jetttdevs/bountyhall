@@ -44,6 +44,7 @@ export function paymentsConfigFromEnv(env = process.env) {
     explorer: (env.EXPLORER_URL || DEFAULTS.explorer).replace(/\/$/, ''),
     confirmations: Number(env.CONFIRMATIONS || DEFAULTS.confirmations),
     minWithdrawal: Number(env.MIN_WITHDRAWAL || DEFAULTS.minWithdrawal),
+    maxWithdrawalPerDay: Number(env.MAX_WITHDRAWAL_PER_DAY || 0),
     fromBlock: env.WATCH_FROM_BLOCK ? BigInt(env.WATCH_FROM_BLOCK) : null,
     privateKey: env.HOT_WALLET_PRIVATE_KEY || null,
     depositAddress: env.DEPOSIT_ADDRESS || null,
@@ -101,7 +102,8 @@ export class Payments {
     return {
       mode: 'token', symbol: this.cfg.symbol, token: this.chain.token, chain_id: this.cfg.chainId, chain_name: this.cfg.chainName,
       rpc_url: this.cfg.rpcUrl, explorer: this.cfg.explorer, decimals: this.decimals, deposit_address: this.chain.treasury,
-      confirmations: this.cfg.confirmations, min_withdrawal: this.cfg.minWithdrawal, withdrawals: 'reviewed by an admin', ready: this.ready,
+      confirmations: this.cfg.confirmations, min_withdrawal: this.cfg.minWithdrawal, max_withdrawal_per_day: this.cfg.maxWithdrawalPerDay || null,
+      withdrawals: 'reviewed by an admin', ready: this.ready,
     };
   }
 
@@ -205,11 +207,32 @@ export class Payments {
       const w = this.wallet(me.id);
       if (!w) throw new HttpError(409, 'link a wallet first; withdrawals only go to your linked wallet', 'no_wallet');
       if (this.market.balance(me.id) < amount) throw new HttpError(402, 'insufficient balance', 'insufficient_funds');
+      if (this.cfg.maxWithdrawalPerDay) {
+        const used = Number(this.db.prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM withdrawals WHERE account_id = ? AND created_at > ? AND status NOT IN ('rejected', 'failed', 'refunded')").get(me.id, now() - 24 * 60 * MINUTE).s);
+        if (used + amount > this.cfg.maxWithdrawalPerDay) throw new HttpError(429, `daily withdrawal limit is ${this.cfg.maxWithdrawalPerDay}; ${Math.max(0, this.cfg.maxWithdrawalPerDay - used)} left in the last 24 hours`, 'daily_limit');
+      }
       const id = newId('wd');
       const t = now();
       this.db.prepare(`INSERT INTO withdrawals (id, account_id, to_address, amount, raw_amount, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`).run(id, me.id, w.address, amount, (BigInt(amount) * this.unit()).toString(), t, t);
       this.market.transfer([[me.id, -amount], [SYS.withdrawals, amount]], 'withdrawal requested');
+      return this.withdrawal(id);
+    });
+  }
+
+  // Operator payout: move house fees (or another system-owned account, like the
+  // house agent's earnings) to any address. Goes through the same review queue.
+  requestOperatorWithdrawal(accountId, { amount, to }) {
+    this.#needReady();
+    const n = int(amount, 'amount', { min: 1, max: Number.MAX_SAFE_INTEGER });
+    if (typeof to !== 'string' || !isAddress(to)) throw new HttpError(400, 'to must be a 0x wallet address', 'invalid_input');
+    return tx(this.db, () => {
+      if (this.market.balance(accountId) < n) throw new HttpError(402, `that account holds ${this.market.balance(accountId)}`, 'insufficient_funds');
+      const id = newId('wd');
+      const t = now();
+      this.db.prepare(`INSERT INTO withdrawals (id, account_id, to_address, amount, raw_amount, status, note, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', 'operator payout', ?, ?)`).run(id, accountId, getAddress(to), n, (BigInt(n) * this.unit()).toString(), t, t);
+      this.market.transfer([[accountId, -n], [SYS.withdrawals, n]], 'operator payout requested');
       return this.withdrawal(id);
     });
   }

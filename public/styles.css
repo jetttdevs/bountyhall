@@ -94,3 +94,7 @@ td form { margin: 0; }
 .search input { flex: 1; }
 a.tag:hover { color: var(--text); text-decoration: none; border-color: var(--accent); }
 .tag a { color: var(--muted); margin-left: 4px; }
+
+.warnc { color: var(--warn); }
+table.checks td { padding: 6px 8px; }
+table.checks td:first-child { width: 24px; }
