@@ -105,6 +105,9 @@ test('MCP: a full job from post to payout, entirely through tools', async () => 
   assert.equal(done.status, 'completed');
   const me = (await tool('my_account', {}, agent.key)).json;
   assert.equal(me.balance, 1000 + 69);
+  const noPay = await tool('my_wallet', {}, agent.key);
+  assert.equal(noPay.isError, true);
+  assert.match(noPay.text, /test credits/);
   const seen = (await tool('get_intent', { intent_id: intent.id })).json;
   assert.match(seen.delivery.content, /Crumb/);
   assert.equal(app.market.ledgerTotal(), 0);

@@ -6,7 +6,8 @@ const store = {
   set(v) { try { v ? localStorage.setItem(KEY, v) : localStorage.removeItem(KEY); } catch {} },
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const cr = (n) => `<span class="cr">${Number(n).toLocaleString('en-US')} cr</span>`;
+const UNIT = document.querySelector('meta[name="bh-unit"]')?.content || 'cr';
+const cr = (n) => `<span class="cr">${Number(n).toLocaleString('en-US')} ${esc(UNIT)}</span>`;
 const $ = (s, el = document) => el.querySelector(s);
 
 async function api(method, path, body) {
@@ -180,5 +181,176 @@ function liveFeed() {
   if (need && !store.get()) need.classList.remove('hidden');
   renderActions().catch((e) => { const box = $('#actions'); box.classList.remove('hidden'); box.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   renderMe().catch(() => {});
+  renderWallet().catch((e) => { const box = $('#wallet'); if (box) box.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  initAdmin();
   liveFeed();
 })();
+
+// ---------- wallet (token mode) ----------
+const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
+const toHex = (text) => '0x' + [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, '0')).join('');
+function eth() {
+  if (!window.ethereum) throw new Error('No browser wallet found. Install MetaMask (or another EVM wallet), or link your wallet through the API.');
+  return window.ethereum;
+}
+async function ensureChain(cfg) {
+  const chainId = '0x' + Number(cfg.chain_id).toString(16);
+  try {
+    await eth().request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] });
+  } catch (err) {
+    if (err.code !== 4902) throw err;
+    await eth().request({ method: 'wallet_addEthereumChain', params: [{ chainId, chainName: cfg.chain_name, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: [cfg.rpc_url], blockExplorerUrls: [cfg.explorer] }] });
+  }
+}
+
+async function renderWallet() {
+  const box = $('#wallet');
+  if (!box) return;
+  const cfg = JSON.parse(box.dataset.config);
+  if (!store.get()) { box.innerHTML = '<p><a href="/join">Join</a> or add your API key to use your wallet.</p>'; return; }
+  const w = await api('GET', '/api/wallet');
+  const tx = (h) => (h ? `<a href="${esc(cfg.explorer)}/tx/${esc(h)}">${esc(h.slice(0, 10))}…</a>` : '—');
+  const when = (t) => new Date(t).toLocaleString();
+  const linked = w.wallet
+    ? `<p>Linked wallet: <a href="${esc(cfg.explorer)}/address/${esc(w.wallet.address)}"><code>${esc(w.wallet.address)}</code></a> <button class="btn small ghost" id="link-wallet">Change</button></p>`
+    : `<p>No wallet linked yet. Link one to deposit and withdraw ${esc(cfg.symbol)}.</p><button class="btn" id="link-wallet">Connect wallet and sign</button>`;
+  box.innerHTML = `
+  <section class="stats"><div><b>${w.balance.toLocaleString('en-US')}</b><span>${esc(cfg.symbol)} balance</span></div></section>
+  <section class="panel stack"><h2>1. Link your wallet</h2>${linked}<p class="err" id="link-err"></p>
+    <p class="small muted">You sign a one-time message; no transaction and no gas. Agents: see <a href="/solver.md">solver.md</a> to link from code.</p></section>
+  <section class="panel stack"><h2>2. Deposit</h2>
+    ${w.wallet ? `<div class="row gap wrap-row"><label>Amount (${esc(cfg.symbol)})<input id="dep-amount" type="number" min="1" step="1" placeholder="10000"></label><button class="btn" id="deposit" ${cfg.decimals == null ? 'disabled' : ''}>Send from my wallet</button></div>
+    <p class="small muted">Or send ${esc(cfg.symbol)} yourself <b>from your linked wallet</b> to <code>${esc(w.deposit_address)}</code> on ${esc(cfg.chain_name)}. It is credited after ${esc(cfg.confirmations)} confirmations.</p>` : '<p class="muted">Link a wallet first, so we know the deposit is yours.</p>'}
+    <p class="err" id="dep-err"></p><p id="dep-ok" class="small"></p></section>
+  <section class="panel"><h2>3. Withdraw</h2>
+    ${w.wallet ? `<form data-form class="stack"><input type="hidden" name="_action" value="withdraw">
+      <div class="row gap wrap-row"><label>Amount (${esc(cfg.symbol)}, minimum ${esc(cfg.min_withdrawal)})<input name="amount" type="number" min="${esc(cfg.min_withdrawal)}" step="1" required></label><button class="btn" type="submit">Request withdrawal</button></div>
+      <p class="small muted">Goes to ${esc(shortAddr(w.wallet.address))} after an admin reviews it. The amount leaves your balance now and comes back if the request is rejected.</p><p class="err" data-err></p></form>` : '<p class="muted">Link a wallet first.</p>'}</section>
+  <h2>Deposits</h2>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Amount</th><th>Status</th><th>Transaction</th></tr></thead><tbody>
+  ${w.deposits.map((d) => `<tr><td>${when(d.created_at)}</td><td>${cr(d.credited)}</td><td>${esc(d.status)}</td><td>${tx(d.tx_hash)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}
+  </tbody></table></div>
+  <h2>Withdrawals</h2>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Amount</th><th>To</th><th>Status</th><th>Transaction</th></tr></thead><tbody>
+  ${w.withdrawals.map((x) => `<tr><td>${when(x.created_at)}</td><td>${cr(x.amount)}</td><td><code>${esc(shortAddr(x.to_address))}</code></td><td>${esc(x.status)}${x.note ? `<div class="small muted">${esc(x.note)}</div>` : ''}</td><td>${tx(x.tx_hash)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">None yet.</td></tr>'}
+  </tbody></table></div>`;
+
+  $('#link-wallet').onclick = async () => {
+    const err = $('#link-err'); err.textContent = '';
+    try {
+      const [address] = await eth().request({ method: 'eth_requestAccounts' });
+      await ensureChain(cfg);
+      const ch = await api('GET', `/api/wallet/challenge?address=${encodeURIComponent(address)}`);
+      const signature = await eth().request({ method: 'personal_sign', params: [toHex(ch.message), address] });
+      await api('POST', '/api/wallet/link', { address, signature });
+      location.reload();
+    } catch (e) { err.textContent = e.message; }
+  };
+  const dep = $('#deposit');
+  if (dep) dep.onclick = async () => {
+    const err = $('#dep-err'); err.textContent = ''; $('#dep-ok').textContent = '';
+    try {
+      const amount = Number($('#dep-amount').value);
+      if (!Number.isInteger(amount) || amount < 1) throw new Error('enter a whole number of tokens');
+      const [from] = await eth().request({ method: 'eth_requestAccounts' });
+      if (from.toLowerCase() !== w.wallet.address.toLowerCase()) throw new Error(`switch your wallet to the linked address ${shortAddr(w.wallet.address)}`);
+      await ensureChain(cfg);
+      const raw = BigInt(amount) * 10n ** BigInt(cfg.decimals);
+      const data = '0xa9059cbb' + w.deposit_address.slice(2).toLowerCase().padStart(64, '0') + raw.toString(16).padStart(64, '0');
+      const hash = await eth().request({ method: 'eth_sendTransaction', params: [{ from, to: cfg.token, data }] });
+      $('#dep-ok').innerHTML = `Sent: ${tx(hash)}. It shows up here after ${esc(cfg.confirmations)} confirmations.`;
+    } catch (e) { err.textContent = e.message; }
+  };
+}
+actions.withdraw = async (data) => {
+  await api('POST', '/api/wallet/withdraw', { amount: data.amount });
+  location.reload();
+};
+
+// ---------- admin desk ----------
+const ADMIN_KEY = 'bountyhall.admin';
+const adminStore = {
+  get() { try { return sessionStorage.getItem(ADMIN_KEY) || ''; } catch { return ''; } },
+  set(v) { try { v ? sessionStorage.setItem(ADMIN_KEY, v) : sessionStorage.removeItem(ADMIN_KEY); } catch {} },
+};
+async function adminApi(method, path, body) {
+  const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminStore.get()}` }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `request failed (${res.status})`);
+  return data;
+}
+
+function initAdmin() {
+  const login = $('#admin-login');
+  if (!login) return;
+  login.onsubmit = async (ev) => {
+    ev.preventDefault();
+    adminStore.set(login.elements.token.value.trim());
+    try { await renderAdmin(); } catch (e) { adminStore.set(''); $('[data-err]', login).textContent = e.message; }
+  };
+  if (adminStore.get()) renderAdmin().catch(() => adminStore.set(''));
+}
+
+async function renderAdmin() {
+  const box = $('#admin');
+  const tokenMode = box.dataset.tokenMode === '1';
+  const [{ disputes }, treasury, wd] = await Promise.all([
+    adminApi('GET', '/api/admin/disputes'),
+    tokenMode ? adminApi('GET', '/api/admin/treasury') : null,
+    tokenMode ? adminApi('GET', '/api/admin/withdrawals') : null,
+  ]);
+  $('#admin-login').classList.add('hidden');
+  box.classList.remove('hidden');
+  const when = (t) => new Date(t).toLocaleString();
+  const parts = [];
+  if (treasury) {
+    const t = treasury;
+    parts.push(`<section class="panel"><h2>Treasury</h2>
+      <p>${t.solvent === undefined ? '<span class="err">Chain unreachable: ' + esc(t.last_error || '') + '</span>' : t.solvent ? '<b class="pos">Solvent</b>' : '<b class="neg">UNDER-COLLATERALISED</b>'} · address <code>${esc(t.address)}</code></p>
+      <section class="stats">
+        <div><b>${t.onchain_balance?.toLocaleString('en-US') ?? '—'}</b><span>on-chain ${esc(t.symbol)}</span></div>
+        <div><b>${t.owed_total.toLocaleString('en-US')}</b><span>owed in total</span></div>
+        <div><b>${t.held_by_users.toLocaleString('en-US')}</b><span>user balances</span></div>
+        <div><b>${t.in_escrow.toLocaleString('en-US')}</b><span>in escrow</span></div>
+        <div><b>${t.pending_withdrawals.toLocaleString('en-US')}</b><span>pending withdrawals</span></div>
+        <div><b>${t.fees.toLocaleString('en-US')}</b><span>house fees</span></div>
+      </section>
+      <p class="small muted">Gas balance: ${t.gas_balance_wei ? (Number(BigInt(t.gas_balance_wei) / 10n ** 12n) / 1e6).toFixed(6) + ' ETH' : '—'} · unclaimed deposits: ${t.unclaimed_deposits} · unbacked signup credits: ${t.unbacked_signup_credits} · scanned to block ${esc(t.cursor_block ?? '—')}</p>
+      <button class="btn small ghost" data-admin="poll">Scan the chain now</button></section>`);
+    const open = wd.withdrawals.filter((w) => ['pending', 'signing', 'sending'].includes(w.status));
+    const done = wd.withdrawals.filter((w) => !['pending', 'signing', 'sending'].includes(w.status)).slice(0, 30);
+    const row = (w) => `<tr><td>${when(w.created_at)}</td><td><a href="/u/${esc(w.account_name)}">${esc(w.account_name)}</a><div class="small muted">wallet linked ${w.wallet_linked_at ? when(w.wallet_linked_at) : '—'}</div></td>
+      <td>${cr(w.amount)}</td><td><code>${esc(w.to_address)}</code></td><td>${esc(w.status)}${w.error ? `<div class="small err">${esc(w.error)}</div>` : ''}${w.note ? `<div class="small muted">${esc(w.note)}</div>` : ''}</td>
+      <td>${w.explorer_url ? `<a href="${esc(w.explorer_url)}">tx</a>` : ''}</td>
+      <td class="stack">${w.status === 'pending' ? `<button class="btn small" data-admin="approve" data-id="${esc(w.id)}">Approve and send</button><button class="btn small danger" data-admin="reject" data-id="${esc(w.id)}">Reject</button>` : ''}
+      ${w.status === 'sending' ? `<button class="btn small ghost" data-admin="rebroadcast" data-id="${esc(w.id)}">Rebroadcast</button><button class="btn small danger" data-admin="refund" data-id="${esc(w.id)}">Refund (dropped)</button>` : ''}</td></tr>`;
+    const table = (xs) => `<div class="table-wrap"><table><thead><tr><th>Requested</th><th>Account</th><th>Amount</th><th>To</th><th>Status</th><th></th><th></th></tr></thead><tbody>${xs.map(row).join('') || '<tr><td colspan="7" class="muted">Nothing here.</td></tr>'}</tbody></table></div>`;
+    parts.push(`<h2>Withdrawals to review (${open.length})</h2>${table(open)}<h2>Recent withdrawals</h2>${table(done)}`);
+  }
+  parts.push(`<h2>Disputes (${disputes.length})</h2>` + (disputes.map((d) => `<section class="panel stack"><h3><a href="/i/${esc(d.id)}">${esc(d.title)}</a> — ${cr(d.case.price)}</h3>
+    <p class="small"><b>Complaint:</b> ${esc(d.case.reason)}</p><details><summary>Delivery</summary><pre class="delivery">${esc(d.case.delivery)}</pre></details>
+    <div class="row gap wrap-row"><label>Solver share %<input type="number" min="0" max="100" value="50" id="share-${esc(d.id)}"></label><label>Rationale<input id="why-${esc(d.id)}" placeholder="Why this split"></label>
+    <button class="btn small" data-admin="resolve" data-id="${esc(d.id)}">Rule</button></div></section>`).join('') || '<p class="muted">No open disputes.</p>'));
+  parts.push('<p><button class="btn small ghost" data-admin="logout">Lock the desk</button></p>');
+  box.innerHTML = parts.join('');
+}
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('[data-admin]');
+  if (!btn) return;
+  const { admin: action, id } = btn.dataset;
+  btn.disabled = true;
+  try {
+    if (action === 'logout') { adminStore.set(''); location.reload(); return; }
+    if (action === 'poll') await adminApi('POST', '/api/admin/chain/poll');
+    if (action === 'approve' && confirm('Sign and send this transfer from the hot wallet?')) await adminApi('POST', `/api/admin/withdrawals/${id}/approve`);
+    if (action === 'reject') { const reason = prompt('Reason for rejecting (the user sees this):'); if (reason) await adminApi('POST', `/api/admin/withdrawals/${id}/reject`, { reason }); }
+    if (action === 'rebroadcast') await adminApi('POST', `/api/admin/withdrawals/${id}/rebroadcast`);
+    if (action === 'refund' && confirm('Refund this withdrawal to the account? Only works if the transfer was dropped.')) await adminApi('POST', `/api/admin/withdrawals/${id}/refund`);
+    if (action === 'resolve') await adminApi('POST', `/api/admin/resolve/${id}`, { solver_share: Number($(`#share-${id}`).value), rationale: $(`#why-${id}`).value || 'Ruled by an admin.' });
+    await renderAdmin();
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+  }
+});

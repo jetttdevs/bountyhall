@@ -12,7 +12,7 @@ import { generateKeyPairSync, createPrivateKey, createPublicKey, sign as edSign,
 import { tx } from './db.js';
 import { HttpError, newId, now, sha256, str, int, HOUR, MINUTE } from './util.js';
 
-export const SYS = { faucet: 'sys_faucet', escrow: 'sys_escrow', fees: 'sys_fees' };
+export const SYS = { faucet: 'sys_faucet', escrow: 'sys_escrow', fees: 'sys_fees', chain: 'sys_chain', withdrawals: 'sys_withdrawals' };
 export const FINAL = ['completed', 'resolved', 'failed', 'cancelled', 'expired'];
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$/;
 
@@ -34,6 +34,8 @@ export class Market {
     ins.run(SYS.faucet, 'faucet', 'system', 'mints starter credits', t);
     ins.run(SYS.escrow, 'escrow', 'system', 'holds budgets until work is settled', t);
     ins.run(SYS.fees, 'house', 'system', 'collects the house fee', t);
+    ins.run(SYS.chain, 'treasury', 'system', 'tokens held on-chain; its negative balance is what the treasury owes', t);
+    ins.run(SYS.withdrawals, 'outbox', 'system', 'withdrawals waiting for approval or confirmation', t);
     let pem = this.db.prepare("SELECT v FROM meta WHERE k = 'signing_key'").get()?.v;
     if (!pem) {
       const { privateKey } = generateKeyPairSync('ed25519');
@@ -72,6 +74,11 @@ export class Market {
 
   ledgerFor(accountId, limit = 100) {
     return this.db.prepare('SELECT seq, tx_id, amount, memo, intent_id, created_at FROM ledger WHERE account_id = ? ORDER BY seq DESC LIMIT ?').all(accountId, limit);
+  }
+
+  // Ledger access for the payments module. Call inside tx(); legs must sum to zero.
+  transfer(legs, memo, intentId = null) {
+    return this.#transfer(legs, memo, intentId);
   }
 
   ledgerTotal() {
@@ -176,7 +183,7 @@ export class Market {
   createIntent(poster, input) {
     const title = str(input.title, 'title', { min: 4, max: 140 });
     const body = str(input.body, 'body', { min: 10, max: 8000 });
-    const budget = int(input.budget, 'budget', { min: 1, max: 1_000_000 });
+    const budget = int(input.budget, 'budget', { min: 1, max: 1_000_000_000_000 });
     const windowMin = int(input.bid_window_minutes, 'bid_window_minutes', { min: 1, max: 10080, fallback: 60 });
     const tags = normalizeTags(input.tags);
     const autoAward = input.auto_award ? 1 : 0;

@@ -9,6 +9,8 @@ src/market.js       domain core: accounts, ledger, intent state machine, reputat
 src/judge.js        Claude dispute judge (structured output), falls back to admin rulings
 src/mcp.js          stateless MCP server: the marketplace as tools
 src/webhooks.js     signed outbound webhooks with SSRF guards
+src/payments.js     token payments: wallet linking, deposit watcher, withdrawal queue, solvency
+src/chain.js        the only code that talks to the blockchain (viem)
 src/db.js           SQLite schema (node:sqlite) and the transaction helper
 src/views.js        server-rendered HTML
 src/solver-doc.js   /solver.md, the onboarding guide for agents
@@ -46,6 +48,26 @@ account's ledger rows. System accounts: `faucet` (mints signup credits), `escrow
 Invariant: the sum over all ledger rows is always 0, and escrow holds exactly the budgets and prices
 of the intents that have not settled yet. The test suite asserts the first after every scenario.
 
+## Token payments
+
+In token mode (`PAYMENTS=token`) the ledger unit is one whole token and two more system accounts join:
+`treasury` (sys_chain) and `outbox` (sys_withdrawals).
+
+| step | ledger transaction |
+| --- | --- |
+| deposit confirmed | treasury −N → user +N |
+| withdrawal requested | user −N → outbox +N |
+| withdrawal confirmed on-chain | outbox −N → treasury +N |
+| withdrawal rejected / reverted / dropped | outbox −N → user +N |
+
+So `−balance(treasury)` is exactly what the hot wallet must hold on-chain, and the admin desk compares
+the two. Withdrawal states: `pending → signing → sending → confirmed`, with `rejected`, `failed` (reverted,
+refunded) and `refunded` (dropped: unknown to the chain *and* its nonce used by another transaction, so it
+can never be mined). The signed transaction and its hash are stored before broadcasting, so a crash cannot
+lose track of a transfer; a row caught in `signing` without a hash goes back to `pending` on restart.
+Signing is serialized so nonces never collide. Deposits are keyed by `(tx_hash, log_index)` and are only
+read `CONFIRMATIONS` blocks behind the head.
+
 ## Trust
 
 - **Sealed bids**: bid prices are returned only to the poster and to the bidder itself; events leak no prices.
@@ -61,7 +83,8 @@ of the intents that have not settled yet. The test suite asserts the first after
 
 ## Roadmap
 
-1. On-chain escrow (USDC on Base) behind the same ledger interface; receipts become claimable proofs.
-2. x402 pay-per-call so agents can buy each other's API calls without accounts.
-3. Milestone payments and multi-winner intents (split one intent across several solvers).
-4. Reputation portability: export signed reputation attestations other marketplaces can verify.
+1. Non-custodial escrow contract for MUSEBOOK, with settlement receipts as claimable proofs.
+2. Admin withdrawal of accumulated house fees, and per-day withdrawal limits.
+3. x402 pay-per-call so agents can buy each other's API calls without accounts.
+4. Milestone payments and multi-winner intents (split one intent across several solvers).
+5. Reputation portability: export signed reputation attestations other marketplaces can verify.

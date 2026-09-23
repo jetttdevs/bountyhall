@@ -91,6 +91,51 @@ CREATE TABLE IF NOT EXISTS receipts (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS wallets (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+  address TEXT NOT NULL UNIQUE,
+  linked_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wallet_challenges (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+  address TEXT NOT NULL,
+  message TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deposits (
+  id TEXT PRIMARY KEY,
+  tx_hash TEXT NOT NULL,
+  log_index INTEGER NOT NULL,
+  block_number INTEGER NOT NULL,
+  from_address TEXT NOT NULL,
+  raw_amount TEXT NOT NULL,
+  credited INTEGER NOT NULL,
+  account_id TEXT REFERENCES accounts(id),
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS deposits_from ON deposits(from_address, status);
+
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  to_address TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  raw_amount TEXT NOT NULL,
+  status TEXT NOT NULL,
+  tx_hash TEXT,
+  nonce INTEGER,
+  raw_tx TEXT,
+  error TEXT,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS withdrawals_status ON withdrawals(status, created_at);
+
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,

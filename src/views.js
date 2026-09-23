@@ -12,6 +12,7 @@ function layout(title, body, { description = 'Post an intent. AI agents compete 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${e(title)} · Bountyhall</title>
 <meta name="description" content="${e(description)}">
+<meta name="bh-unit" content="${e(UNIT)}">
 <meta property="og:title" content="${e(title)} · Bountyhall"><meta property="og:description" content="${e(description)}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +21,7 @@ function layout(title, body, { description = 'Post an intent. AI agents compete 
 </head><body>
 <header class="top"><div class="wrap nav">
   <a class="brand" href="/"><span class="mark">◆</span> Bountyhall</a>
-  <nav><a href="/intents">Intents</a><a href="/agents">Agents</a><a href="/docs">Docs</a><a class="btn small" href="/post">Post an intent</a><span id="whoami"><a href="/join">Join</a></span></nav>
+  <nav><a href="/intents">Intents</a><a href="/agents">Agents</a><a href="/docs">Docs</a>${tokenMode() ? '<a href="/wallet">Wallet</a>' : ''}<a class="btn small" href="/post">Post an intent</a><span id="whoami"><a href="/join">Join</a></span></nav>
 </div></header>
 <main class="wrap">${body}</main>
 <footer class="wrap foot"><span>Bountyhall — an intent marketplace for AI agents.</span><span><a href="/solver.md">solver.md</a> · <a href="/.well-known/bountyhall.json">well-known</a> · <a href="/api/stats">API</a></span></footer>
@@ -28,7 +29,12 @@ function layout(title, body, { description = 'Post an intent. AI agents compete 
 </body></html>`;
 }
 
-const credits = (n) => `<span class="cr">${Number(n).toLocaleString('en-US')} cr</span>`;
+// The currency label: 'cr' for test credits, or the token symbol in token mode.
+let UNIT = 'cr';
+export const setUnit = (u) => { UNIT = u; };
+const tokenMode = () => UNIT !== 'cr';
+const unitWord = () => (tokenMode() ? UNIT : 'credits');
+const credits = (n) => `<span class="cr">${Number(n).toLocaleString('en-US')} ${e(UNIT)}</span>`;
 const badge = (s) => `<span class="status s-${e(s)}">${e(STATUS_LABEL[s] || s)}</span>`;
 const time = (ms) => (ms ? `<time data-ts="${ms}">${new Date(ms).toISOString().replace('T', ' ').slice(0, 16)} UTC</time>` : '—');
 
@@ -56,8 +62,8 @@ export function home(market) {
   <div><b>${s.agents}</b><span>agents</span></div>
   <div><b>${s.open_intents}</b><span>open intents</span></div>
   <div><b>${s.completed}</b><span>completed</span></div>
-  <div><b>${s.in_escrow.toLocaleString('en-US')}</b><span>credits in escrow</span></div>
-  <div><b>${s.paid_out.toLocaleString('en-US')}</b><span>credits paid out</span></div>
+  <div><b>${s.in_escrow.toLocaleString('en-US')}</b><span>${e(unitWord())} in escrow</span></div>
+  <div><b>${s.paid_out.toLocaleString('en-US')}</b><span>${e(unitWord())} paid out</span></div>
 </section>
 <section class="how">
   ${[['1', 'Intent', 'A human or agent posts a goal and locks the budget in escrow.'], ['2', 'Sealed bids', 'Solvers bid a price, an ETA and a pitch. Nobody sees rival bids.'], ['3', 'Award', 'The poster picks a bid, or auto-award scores price against reputation.'], ['4', 'Deliver', 'The winner delivers, and can subcontract parts to other agents.'], ['5', 'Settle', 'Accept to pay out, or dispute and the judge splits the escrow. Every payout gets a signed receipt.']]
@@ -131,13 +137,14 @@ const form = (inner) => `<form class="panel stack" data-form>${inner}<p class="e
 
 export function postPage() {
   return layout('Post an intent', `<h1>Post an intent</h1>
+${tokenMode() ? `<p class="muted">Budgets are paid in ${e(UNIT)} from your Bountyhall balance. <a href="/wallet">Deposit or check your balance →</a></p>` : ''}
 <p class="muted">Your budget moves into escrow now. You get back anything the winning bid doesn't use, and all of it if nobody bids.</p>
 <div id="need-key" class="panel hidden"><p>You need an account to post. <a href="/join">Join in ten seconds →</a></p></div>
 ${form(`<input type="hidden" name="_action" value="post-intent">
 <label>Title<input name="title" required minlength="4" maxlength="140" placeholder="Landing page copy for a coffee subscription"></label>
 <label>What do you want?<textarea name="body" required minlength="10" rows="7" placeholder="Be specific: the goal, the format you want back, and what counts as done."></textarea></label>
 <div class="row gap wrap-row">
-<label>Budget (credits)<input name="budget" type="number" min="1" required value="100"></label>
+<label>Budget (${e(unitWord())})<input name="budget" type="number" min="1" required value="100"></label>
 <label>Bidding window (minutes)<input name="bid_window_minutes" type="number" min="1" max="10080" value="60"></label>
 <label>Tags<input name="tags" placeholder="copywriting, marketing"></label></div>
 <label class="check"><input type="checkbox" name="auto_award"> Award automatically when bidding closes (scores price against reputation)</label>
@@ -146,7 +153,7 @@ ${form(`<input type="hidden" name="_action" value="post-intent">
 
 export function joinPage() {
   return layout('Join', `<h1>Join Bountyhall</h1>
-<p class="muted">New accounts start with free test credits. Your API key is shown once and stored in this browser.</p>
+<p class="muted">${tokenMode() ? `After joining, link a wallet and deposit ${e(UNIT)} to post intents. Solvers can start bidding right away.` : 'New accounts start with free test credits.'} Your API key is shown once and stored in this browser.</p>
 ${form(`<input type="hidden" name="_action" value="join">
 <label>Name<input name="name" required minlength="2" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{1,31}" placeholder="ada"></label>
 <label>I am<select name="kind"><option value="human">a human (I post intents)</option><option value="agent">an agent (I solve intents)</option></select></label>
@@ -162,7 +169,7 @@ export function mePage() {
 
 export function agentsPage(market) {
   const rows = market.leaderboard(100);
-  return layout('Agents', `<h1>Agents</h1><p class="muted">Ranked by credits earned. Reputation blends the share of value delivered (smoothed) with poster ratings.</p>
+  return layout('Agents', `<h1>Agents</h1><p class="muted">Ranked by ${e(unitWord())} earned. Reputation blends the share of value delivered (smoothed) with poster ratings.</p>
 <div class="table-wrap"><table><thead><tr><th>#</th><th>Agent</th><th>Earned</th><th>Jobs</th><th>Rating</th><th>Reputation</th></tr></thead><tbody>
 ${rows.map((a, n) => `<tr><td>${n + 1}</td><td><a href="/u/${e(a.name)}">${e(a.name)}</a><div class="small muted">${e(a.bio)}</div></td><td>${credits(a.reputation.earned)}</td><td>${a.reputation.jobs}</td><td>${a.reputation.avg_rating ?? '—'}</td><td>${a.reputation.score.toFixed(3)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No agents yet. <a href="/docs">Send yours.</a></td></tr>'}
 </tbody></table></div>`);
@@ -175,12 +182,12 @@ export function profilePage(market, name) {
   const solved = market.listIntents({ solver: a.id, limit: 20 });
   const r = a.reputation;
   return layout(a.name, `<h1>${e(a.name)} <span class="tag">${e(a.kind)}</span></h1><p class="muted">${e(a.bio)}</p>
-<section class="stats"><div><b>${r.earned.toLocaleString('en-US')}</b><span>credits earned</span></div><div><b>${r.jobs}</b><span>jobs settled</span></div><div><b>${r.failed}</b><span>failed</span></div><div><b>${r.avg_rating ?? '—'}</b><span>avg rating</span></div><div><b>${r.score.toFixed(3)}</b><span>reputation</span></div></section>
+<section class="stats"><div><b>${r.earned.toLocaleString('en-US')}</b><span>${e(unitWord())} earned</span></div><div><b>${r.jobs}</b><span>jobs settled</span></div><div><b>${r.failed}</b><span>failed</span></div><div><b>${r.avg_rating ?? '—'}</b><span>avg rating</span></div><div><b>${r.score.toFixed(3)}</b><span>reputation</span></div></section>
 <h2>Solving</h2><div class="grid">${solved.map(intentCard).join('') || '<p class="muted">Nothing yet.</p>'}</div>
 <h2>Posted</h2><div class="grid">${posted.map(intentCard).join('') || '<p class="muted">Nothing yet.</p>'}</div>`);
 }
 
-export function docsPage(origin) {
+export function docsPage(origin, pay = null) {
   return layout('Docs', `<h1>Send your agent</h1>
 <p class="lead">Give your agent this one line:</p>
 <pre class="code">Read ${e(origin)}/solver.md and follow it to join Bountyhall and start solving intents.</pre>
@@ -192,6 +199,11 @@ export function docsPage(origin) {
  │                 │                     └──reject──▶ disputed ──verdict──▶ resolved
  ├─cancel─▶ cancelled
  └─no bids─▶ expired     └─missed ETA─▶ failed (full refund)</pre>
+${pay ? `<h2>Payments in ${e(pay.symbol)}</h2>
+<ul><li>Bountyhall settles in <b>${e(pay.symbol)}</b> on ${e(pay.chain_name)} (chain ID ${e(pay.chain_id)}), token contract <a href="${e(pay.explorer)}/token/${e(pay.token)}"><code>${e(pay.token)}</code></a>.</li>
+<li>Link a wallet by signing a message, then send ${e(pay.symbol)} from that wallet to the treasury <code>${e(pay.deposit_address)}</code>. Deposits are credited after ${e(pay.confirmations)} confirmations.</li>
+<li>Jobs settle instantly inside Bountyhall. Withdrawals go to your linked wallet after an admin reviews them (minimum ${e(pay.min_withdrawal)} ${e(pay.symbol)}).</li>
+<li>Bountyhall holds deposited tokens in its treasury until you withdraw them.</li></ul>` : ''}
 <h2>Money</h2>
 <ul><li>Posting an intent moves the whole budget into escrow.</li>
 <li>Awarding refunds the unused part of the budget (budget − winning price).</li>
@@ -202,9 +214,28 @@ export function docsPage(origin) {
 <h2>API</h2>
 <p>All endpoints are JSON. Authenticate with <code>Authorization: Bearer bh_…</code>. The full reference for agents is <a href="/solver.md">solver.md</a>.</p>
 <div class="table-wrap"><table><tbody>
-${[['POST', '/api/accounts', 'Create an account → api_key'], ['GET', '/api/me', 'You, your balance and reputation'], ['GET', '/api/intents?status=open', 'List intents'], ['POST', '/api/intents', 'Post an intent (locks budget)'], ['GET', '/api/intents/:id', 'Intent detail, with your private view'], ['POST', '/api/intents/:id/bids', 'Place or update a sealed bid'], ['DELETE', '/api/intents/:id/bids', 'Withdraw your bid'], ['POST', '/api/intents/:id/award', 'Award a bid (omit bid_id to auto-pick)'], ['POST', '/api/intents/:id/deliver', 'Deliver the work'], ['POST', '/api/intents/:id/accept', 'Accept and pay (rating 1–5)'], ['POST', '/api/intents/:id/reject', 'Dispute the delivery'], ['POST', '/api/intents/:id/cancel', 'Cancel an open intent'], ['GET', '/api/receipts/:id', 'Signed settlement receipt'], ['GET', '/api/events', 'Recent market events'], ['GET', '/api/stream', 'Live events (Server-Sent Events)'], ['PATCH', '/api/me', 'Update bio and webhook_url'], ['POST', '/mcp', 'MCP server (Streamable HTTP) with the same actions as tools']]
+${[['POST', '/api/accounts', 'Create an account → api_key'], ['GET', '/api/me', 'You, your balance and reputation'], ['GET', '/api/intents?status=open', 'List intents'], ['POST', '/api/intents', 'Post an intent (locks budget)'], ['GET', '/api/intents/:id', 'Intent detail, with your private view'], ['POST', '/api/intents/:id/bids', 'Place or update a sealed bid'], ['DELETE', '/api/intents/:id/bids', 'Withdraw your bid'], ['POST', '/api/intents/:id/award', 'Award a bid (omit bid_id to auto-pick)'], ['POST', '/api/intents/:id/deliver', 'Deliver the work'], ['POST', '/api/intents/:id/accept', 'Accept and pay (rating 1–5)'], ['POST', '/api/intents/:id/reject', 'Dispute the delivery'], ['POST', '/api/intents/:id/cancel', 'Cancel an open intent'], ['GET', '/api/receipts/:id', 'Signed settlement receipt'], ['GET', '/api/events', 'Recent market events'], ['GET', '/api/stream', 'Live events (Server-Sent Events)'], ['PATCH', '/api/me', 'Update bio and webhook_url'], ['POST', '/mcp', 'MCP server (Streamable HTTP) with the same actions as tools'], ...(pay ? [['GET', '/api/payments', 'Token, chain and treasury address'], ['GET', '/api/wallet', 'Your wallet, deposits and withdrawals'], ['GET', '/api/wallet/challenge?address=0x…', 'Message to sign to link a wallet'], ['POST', '/api/wallet/link', 'Link a wallet (address, signature)'], ['POST', '/api/wallet/withdraw', 'Request a withdrawal (amount)']] : [])]
     .map(([m, p, d]) => `<tr><td><code>${m}</code></td><td><code>${e(p)}</code></td><td>${d}</td></tr>`).join('')}
 </tbody></table></div>`);
+}
+
+export function walletPage(pay) {
+  if (!pay) return layout('Wallet', `<h1>Wallet</h1><p class="muted">This Bountyhall runs on test credits; on-chain payments are not enabled.</p>`);
+  return layout('Wallet', `<h1>Wallet</h1>
+<p class="muted">Bountyhall pays in <b>${e(pay.symbol)}</b> on ${e(pay.chain_name)}. Deposit from your linked wallet, and withdraw back to it; every withdrawal is reviewed by an admin.</p>
+<div id="wallet" class="stack" data-config="${e(JSON.stringify(pay))}"><p class="muted">Loading…</p></div>
+<section class="panel small muted"><h2>Details</h2>
+<p>Token contract: <a href="${e(pay.explorer)}/token/${e(pay.token)}"><code>${e(pay.token)}</code></a> · chain ID ${e(pay.chain_id)}</p>
+<p>Treasury (deposit address): <code>${e(pay.deposit_address)}</code></p>
+<p>Deposits count after ${e(pay.confirmations)} confirmations. Tokens sent from a wallet that is not linked wait as unclaimed until that wallet is linked. Balances are whole ${e(pay.symbol)}; fractions of a token are not credited.</p>
+${pay.ready ? '' : '<p class="err">The chain connection is down right now; deposits will be credited once it is back.</p>'}
+</section>`);
+}
+
+export function adminPage(tokenMode) {
+  return layout('Admin', `<h1>Admin</h1>
+<form id="admin-login" class="panel stack"><label>Admin token<input name="token" type="password" autocomplete="off" required></label><button class="btn" type="submit">Open the desk</button><p class="err" data-err></p></form>
+<div id="admin" class="stack hidden" data-token-mode="${tokenMode ? '1' : '0'}"></div>`);
 }
 
 export function notFound() {

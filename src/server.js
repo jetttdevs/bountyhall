@@ -12,6 +12,8 @@ import * as views from './views.js';
 import { solverDoc } from './solver-doc.js';
 import { handleRpc } from './mcp.js';
 import { createDispatcher, validateWebhookUrl } from './webhooks.js';
+import { Payments, paymentsConfigFromEnv } from './payments.js';
+import { createChain } from './chain.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC = {
@@ -34,9 +36,18 @@ function limiter(max, windowMs) {
   };
 }
 
-export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, judge = judgeDispute, webhooks = {} } = {}) {
+export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, judge = judgeDispute, webhooks = {}, payments: payOpts = {} } = {}) {
   const db = openDb(dbFile);
-  const market = new Market(db, marketOpts);
+  const payCfg = payOpts.config ?? paymentsConfigFromEnv();
+  const tokenMode = payCfg.mode === 'token';
+  // in token mode every credit must be backed by a deposit, so there is no signup faucet
+  const market = new Market(db, tokenMode ? { ...marketOpts, signupCredits: 0 } : marketOpts);
+  const payments = tokenMode ? new Payments(market, payOpts.chain ?? createChain(payCfg), payCfg) : null;
+  views.setUnit(tokenMode ? payCfg.symbol : 'cr');
+  const pollMs = payOpts.pollMs ?? Number(process.env.CHAIN_POLL_MS ?? 15000);
+  const poller = payments && pollMs ? setInterval(() => payments.poll(), pollMs) : null;
+  poller?.unref();
+  if (payments && pollMs) payments.poll();
   const adminToken = process.env.ADMIN_TOKEN || '';
   const signupLimit = limiter(Number(process.env.SIGNUP_PER_HOUR ?? 10), 60 * MINUTE);
   const writeLimit = limiter(Number(process.env.WRITES_PER_MINUTE ?? 60), MINUTE);
@@ -64,6 +75,14 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
 
   const sweeper = sweepMs ? setInterval(() => { try { market.sweep(); } catch (e) { console.error('[sweep]', e); } }, sweepMs) : null;
   sweeper?.unref();
+
+  const pay = () => {
+    if (!payments) throw new HttpError(404, 'on-chain payments are not enabled on this server', 'payments_disabled');
+    return payments;
+  };
+  const admin = (req) => {
+    if (!adminToken || !safeEqual(bearer(req), adminToken)) throw new HttpError(401, 'admin token required', 'unauthorized');
+  };
 
   const api = [
     ['POST', /^\/api\/accounts$/, async ({ body, ip }) => {
@@ -101,14 +120,37 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     ['POST', /^\/api\/intents\/([^/]+)\/cancel$/, ({ me, params }) => market.cancel(need(me), params[0])],
     ['GET', /^\/api\/receipts\/([^/]+)$/, ({ params }) => market.receipt(params[0])],
     ['GET', /^\/api\/events$/, ({ query }) => ({ events: market.events({ after: query.get('after'), limit: query.get('limit') }) })],
+    ['GET', /^\/api\/payments$/, () => (payments ? payments.publicConfig() : { mode: 'credits', symbol: 'cr' })],
+    ['GET', /^\/api\/wallet$/, ({ me }) => {
+      const p = pay(); need(me);
+      return { wallet: p.wallet(me.id), balance: market.balance(me.id), deposit_address: p.chain.treasury, deposits: p.deposits(me.id), withdrawals: p.withdrawals({ accountId: me.id }) };
+    }],
+    ['GET', /^\/api\/wallet\/challenge$/, ({ me, query }) => pay().challenge(need(me), query.get('address'))],
+    ['POST', /^\/api\/wallet\/link$/, ({ me, body }) => pay().link(need(me), body)],
+    ['POST', /^\/api\/wallet\/withdraw$/, ({ me, body }) => [201, pay().requestWithdrawal(need(me), body)]],
     ['POST', /^\/api\/admin\/resolve\/([^/]+)$/, ({ req, params, body }) => {
-      if (!adminToken || !safeEqual(bearer(req), adminToken)) throw new HttpError(401, 'admin token required', 'unauthorized');
+      admin(req);
       return market.resolve(params[0], { ...body, judge: 'admin' });
     }],
     ['POST', /^\/api\/admin\/sweep$/, ({ req }) => {
-      if (!adminToken || !safeEqual(bearer(req), adminToken)) throw new HttpError(401, 'admin token required', 'unauthorized');
+      admin(req);
       return { changed: market.sweep() };
     }],
+    ['GET', /^\/api\/admin\/disputes$/, ({ req }) => {
+      admin(req);
+      return { disputes: market.listIntents({ status: 'disputed', limit: 200 }).map((i) => ({ ...i, case: market.disputeCase(i.id) })) };
+    }],
+    ['GET', /^\/api\/admin\/treasury$/, ({ req }) => { admin(req); return pay().treasury(); }],
+    ['GET', /^\/api\/admin\/withdrawals$/, ({ req, query }) => {
+      admin(req);
+      const p = pay();
+      return { withdrawals: p.withdrawals({ status: query.get('status') || undefined }).map((w) => ({ ...w, wallet_linked_at: p.wallet(w.account_id)?.linked_at ?? null, account_balance: market.balance(w.account_id) })) };
+    }],
+    ['POST', /^\/api\/admin\/withdrawals\/([^/]+)\/approve$/, ({ req, params }) => { admin(req); return pay().approve(params[0]); }],
+    ['POST', /^\/api\/admin\/withdrawals\/([^/]+)\/reject$/, ({ req, params, body }) => { admin(req); return pay().reject(params[0], body.reason); }],
+    ['POST', /^\/api\/admin\/withdrawals\/([^/]+)\/rebroadcast$/, ({ req, params }) => { admin(req); return pay().rebroadcast(params[0]); }],
+    ['POST', /^\/api\/admin\/withdrawals\/([^/]+)\/refund$/, ({ req, params }) => { admin(req); return pay().refundDropped(params[0]); }],
+    ['POST', /^\/api\/admin\/chain\/poll$/, ({ req }) => { admin(req); return pay().poll(); }],
   ];
 
   const pages = [
@@ -120,7 +162,9 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     [/^\/me$/, () => views.mePage()],
     [/^\/agents$/, () => views.agentsPage(market)],
     [/^\/u\/([^/]+)$/, ({ params }) => views.profilePage(market, decodeURIComponent(params[0]))],
-    [/^\/docs$/, ({ origin }) => views.docsPage(origin)],
+    [/^\/docs$/, ({ origin }) => views.docsPage(origin, payments?.publicConfig())],
+    [/^\/wallet$/, () => views.walletPage(payments?.publicConfig())],
+    [/^\/admin$/, () => views.adminPage(Boolean(payments))],
   ];
 
   async function handle(req, res) {
@@ -136,9 +180,9 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
       res.setHeader('Cache-Control', 'public, max-age=300');
       return send(res, 200, readFileSync(join(ROOT, file)), type);
     }
-    if (path === '/solver.md' || path === '/skill.md') return send(res, 200, solverDoc(origin), 'text/markdown; charset=utf-8');
+    if (path === '/solver.md' || path === '/skill.md') return send(res, 200, solverDoc(origin, payments?.publicConfig()), 'text/markdown; charset=utf-8');
     if (path === '/.well-known/bountyhall.json') {
-      return json(res, 200, { name: 'Bountyhall', api: `${origin}/api`, docs: `${origin}/solver.md`, receipt_signing: { algorithm: 'ed25519', public_key_spki_base64: market.publicKeyDer } });
+      return json(res, 200, { name: 'Bountyhall', api: `${origin}/api`, mcp: `${origin}/mcp`, docs: `${origin}/solver.md`, payments: payments ? payments.publicConfig() : { mode: 'credits' }, receipt_signing: { algorithm: 'ed25519', public_key_spki_base64: market.publicKeyDer } });
     }
     if (path === '/api/stream') return openStream(req, res);
     if (path === '/mcp') return handleMcp(req, res);
@@ -192,7 +236,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     if (me && !writeLimit(me.id)) return json(res, 429, { jsonrpc: '2.0', id: null, error: { code: -32002, message: 'rate limited' } });
     let body;
     try { body = await readJson(req, { allowArray: true }); } catch { return json(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
-    const hooks = { onReject: startJudge };
+    const hooks = { onReject: startJudge, payments };
     try {
       if (Array.isArray(body)) {
         const out = body.map((m) => handleRpc(market, me, m, hooks)).filter(Boolean);
@@ -217,9 +261,9 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
   const server = createServer((req, res) => {
     handle(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, 'internal error', 'text/plain'); });
   });
-  server.on('close', () => { if (sweeper) clearInterval(sweeper); for (const s of streams) s.end(); db.close(); });
+  server.on('close', () => { if (sweeper) clearInterval(sweeper); if (poller) clearInterval(poller); for (const s of streams) s.end(); db.close(); });
   const settleWebhooks = () => Promise.all([...webhookJobs]);
-  return { server, market, db, settleWebhooks };
+  return { server, market, db, payments, settleWebhooks };
 }
 
 function need(me) {
