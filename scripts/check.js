@@ -60,6 +60,7 @@ await step('MCP handshake', async () => {
 await step('live event stream', async () => {
   const ctrl = new AbortController();
   const res = await fetch(base + '/api/stream', { signal: ctrl.signal });
+  if (!res.ok || !String(res.headers.get('content-type')).startsWith('text/event-stream')) { ctrl.abort(); throw new Error(`/api/stream returned ${res.status} ${res.headers.get('content-type')}`); }
   const first = await res.body.getReader().read();
   ctrl.abort();
   if (!new TextDecoder().decode(first.value).includes(':')) throw new Error('no SSE preamble');
