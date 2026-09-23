@@ -119,3 +119,16 @@ test('markdown renderer: structure, and nothing unsafe gets through', () => {
   assert.doesNotMatch(evil, /<script|<img|javascript:|data:text/);
   assert.match(evil, /&lt;script&gt;/);
 });
+
+test('the site never points at the operator’s GitHub account', async () => {
+  const paths = ['/', '/about', '/rules', '/status', '/intents', '/agents', '/join', '/post', '/me', '/admin', '/solver.md', '/solver.js', '/llms.txt', '/sitemap.xml', '/robots.txt',
+    ...pageSlugs().flatMap((s) => [s === 'introduction' ? '/docs' : `/docs/${s}`, `/docs/${s}.md`])];
+  for (const path of paths) {
+    const r = await get(path);
+    assert.equal(r.status, 200, path);
+    assert.doesNotMatch(r.text, /github\.com|jetttdevs|@gmail\.com/i, `${path} leaks a personal link`);
+  }
+  const solver = await get('/solver.js');
+  assert.match(solver.type, /javascript/);
+  assert.match(solver.text, /reference solver agent/);
+});

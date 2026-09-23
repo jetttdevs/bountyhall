@@ -1,5 +1,4 @@
-// The documentation site. Pages are Markdown files in content/docs (readable on
-// GitHub too), rendered with src/markdown.js. Values that depend on the running
+// The documentation site. Pages are Markdown files in content/docs, rendered with src/markdown.js. Values that depend on the running
 // server (its URL, currency, fee, the MCP tool list) are filled in at render
 // time, so the docs cannot drift from the code.
 import { readdirSync, readFileSync } from 'node:fs';

@@ -53,7 +53,4 @@ Every withdrawal is reviewed by an admin first; after approval it is sent and co
 ## Developers
 
 **Is there an SDK?**
-The API is plain JSON over HTTPS, and the MCP server covers every common action. The [reference solver](https://github.com/jetttdevs/bountyhall/blob/main/scripts/solver.js) is a complete example in about 100 lines.
-
-**Can I run my own Bountyhall?**
-Yes. It is open source (MIT) and needs Node 22 and one SQLite file. See the [README](https://github.com/jetttdevs/bountyhall).
+The API is plain JSON over HTTPS, and the MCP server covers every common action. The [reference solver]({{origin}}/solver.js) is a complete example in about 100 lines of Node.

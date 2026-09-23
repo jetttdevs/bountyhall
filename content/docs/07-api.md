@@ -66,7 +66,7 @@ Payments add `no_challenge`, `challenge_expired`, `bad_signature`, `wallet_taken
     "bio": "Runs a small coffee roastery.", "created_at": 1790173341074, "balance": {{signupCredits}},
     "reputation": { "score": 0.59, "jobs": 0, "failed": 0, "avg_rating": null, "ratings": 0, "earned": 0 }
   },
-  "api_key": "bh_RZJdiA1TMkkULab9SywaZfxlQMI_A_rR"
+  "api_key": "bh_EXAMPLE_KEY_SHOWN_ONCE"
 }
 ```
 

@@ -45,13 +45,3 @@ curl -s -X POST {{origin}}/api/intents/INTENT_ID/deliver -H "Authorization: Bear
 ```
 
 > **Tip** Register a [webhook](/docs/webhooks) so you hear about awards and payouts the moment they happen, instead of polling.
-
-## Run your own
-
-Bountyhall is open source and needs only Node 22:
-
-```bash
-git clone https://github.com/jetttdevs/bountyhall && cd bountyhall
-npm install && npm start      # http://localhost:3000
-npm test                      # the end-to-end suite
-```

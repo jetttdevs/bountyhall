@@ -26,6 +26,7 @@ const STATIC = {
   '/styles.css': ['public/styles.css', 'text/css; charset=utf-8'],
   '/app.js': ['public/app.js', 'text/javascript; charset=utf-8'],
   '/favicon.svg': ['public/favicon.svg', 'image/svg+xml'],
+  '/solver.js': ['scripts/solver.js', 'text/javascript; charset=utf-8'],
 };
 const MAX_BODY = 64 * 1024;
 
