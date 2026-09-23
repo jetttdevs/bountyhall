@@ -106,3 +106,23 @@ test('admin: house tick endpoint and the setup check', async () => {
   const html = await (await fetch(base + '/admin')).text();
   assert.match(html, /Admin token/);
 });
+
+test('admin token: clear errors, and tolerant of whitespace and quotes in the variable', async () => {
+  const wrong = await call('GET', '/api/admin/health', { key: 'not-the-token' });
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.data.error, 'wrong admin token');
+  const saved = process.env.ADMIN_TOKEN;
+  try {
+    for (const [value, expect] of [['', 'admin_disabled'], ['  "quoted-token-value-123456789012345"\n', 'ok'], ["'single-quoted-token-12345678901234'", 'ok']]) {
+      process.env.ADMIN_TOKEN = value;
+      const a = createApp({ dbFile: ':memory:', sweepMs: 0 });
+      await new Promise((r) => a.server.listen(0, r));
+      const clean = value.trim().replace(/^(['"])(.*)\1$/, '$2');
+      const res = await fetch(`http://127.0.0.1:${a.server.address().port}/api/admin/health`, { headers: { Authorization: `Bearer ${clean || 'x'}` } });
+      const body = await res.json();
+      if (expect === 'ok') assert.equal(res.status, 200, JSON.stringify(body));
+      else { assert.equal(res.status, 401); assert.equal(body.code, expect); assert.match(body.error, /not set on the server/); }
+      a.server.closeAllConnections(); a.server.close();
+    }
+  } finally { process.env.ADMIN_TOKEN = saved; }
+});

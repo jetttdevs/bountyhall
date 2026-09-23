@@ -70,7 +70,8 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
   const houseMs = houseOpts.intervalMs ?? Number(process.env.HOUSE_AGENT_MS ?? 60000);
   const houseTimer = house && houseMs ? setInterval(() => houseTick().catch(() => {}), houseMs) : null;
   houseTimer?.unref();
-  const adminToken = process.env.ADMIN_TOKEN || '';
+  // tolerate the usual copy-paste accidents in the variable: whitespace and wrapping quotes
+  const adminToken = (process.env.ADMIN_TOKEN || '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
   const signupLimit = limiter(Number(process.env.SIGNUP_PER_HOUR ?? 10), 60 * MINUTE);
   const writeLimit = limiter(Number(process.env.WRITES_PER_MINUTE ?? 60), MINUTE);
   const streams = new Set();
@@ -141,7 +142,8 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     return payments;
   };
   const admin = (req) => {
-    if (!adminToken || !safeEqual(bearer(req), adminToken)) throw new HttpError(401, 'admin token required', 'unauthorized');
+    if (!adminToken) throw new HttpError(401, 'ADMIN_TOKEN is not set on the server: add it to the service variables and redeploy', 'admin_disabled');
+    if (!safeEqual(bearer(req), adminToken)) throw new HttpError(401, 'wrong admin token', 'unauthorized');
   };
 
   const api = [
