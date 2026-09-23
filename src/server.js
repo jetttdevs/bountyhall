@@ -10,6 +10,8 @@ import { judgeDispute, judgeEnabled } from './judge.js';
 import { HttpError, MINUTE } from './util.js';
 import * as views from './views.js';
 import { solverDoc } from './solver-doc.js';
+import { handleRpc } from './mcp.js';
+import { createDispatcher, validateWebhookUrl } from './webhooks.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC = {
@@ -32,13 +34,21 @@ function limiter(max, windowMs) {
   };
 }
 
-export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, judge = judgeDispute } = {}) {
+export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, judge = judgeDispute, webhooks = {} } = {}) {
   const db = openDb(dbFile);
   const market = new Market(db, marketOpts);
   const adminToken = process.env.ADMIN_TOKEN || '';
   const signupLimit = limiter(Number(process.env.SIGNUP_PER_HOUR ?? 10), 60 * MINUTE);
   const writeLimit = limiter(Number(process.env.WRITES_PER_MINUTE ?? 60), MINUTE);
   const streams = new Set();
+
+  const allowPrivateWebhooks = webhooks.allowPrivate ?? process.env.WEBHOOK_ALLOW_PRIVATE === '1';
+  const dispatch = createDispatcher(market, { allowPrivate: allowPrivateWebhooks, ...webhooks });
+  const webhookJobs = new Set();
+  market.onEvent((ev) => {
+    const job = dispatch(ev).finally(() => webhookJobs.delete(job));
+    webhookJobs.add(job);
+  });
 
   market.onEvent((ev) => {
     const line = `id: ${ev.seq}\nevent: market\ndata: ${JSON.stringify(ev)}\n\n`;
@@ -50,6 +60,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     if (!verdict) return;
     try { market.resolve(intentId, verdict); } catch (err) { if (!(err instanceof HttpError)) console.error(err); }
   }
+  const startJudge = (intentId) => { runJudge(intentId).catch((e) => console.error('[judge]', e)); };
 
   const sweeper = sweepMs ? setInterval(() => { try { market.sweep(); } catch (e) { console.error('[sweep]', e); } }, sweepMs) : null;
   sweeper?.unref();
@@ -59,7 +70,13 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
       if (!signupLimit(ip)) throw new HttpError(429, 'too many signups from this address, try again later', 'rate_limited');
       return [201, market.createAccount(body)];
     }],
-    ['GET', /^\/api\/me$/, ({ me }) => market.account(need(me).id)],
+    ['GET', /^\/api\/me$/, ({ me }) => market.account(need(me).id, { self: true })],
+    ['PATCH', /^\/api\/me$/, ({ me, body }) => {
+      const patch = {};
+      if ('bio' in body) patch.bio = body.bio ?? '';
+      if ('webhook_url' in body) patch.webhook_url = validateWebhookUrl(body.webhook_url, { allowPrivate: allowPrivateWebhooks });
+      return market.updateProfile(need(me), patch);
+    }],
     ['GET', /^\/api\/me\/ledger$/, ({ me }) => ({ entries: market.ledgerFor(need(me).id) })],
     ['GET', /^\/api\/me\/intents$/, ({ me }) => ({
       posted: market.listIntents({ poster: need(me).id, limit: 100 }),
@@ -68,7 +85,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     ['GET', /^\/api\/accounts\/([^/]+)$/, ({ params }) => found(market.accountByName(decodeURIComponent(params[0])), 'account')],
     ['GET', /^\/api\/leaderboard$/, () => ({ agents: market.leaderboard() })],
     ['GET', /^\/api\/stats$/, () => ({ ...market.stats(), judge: judgeEnabled() ? 'claude' : 'admin' })],
-    ['GET', /^\/api\/intents$/, ({ query }) => ({ intents: market.listIntents({ status: query.get('status') || undefined, limit: query.get('limit') }) })],
+    ['GET', /^\/api\/intents$/, ({ query }) => ({ intents: market.listIntents({ status: query.get('status') || undefined, tag: query.get('tag') || undefined, q: query.get('q') || undefined, limit: query.get('limit') }) })],
     ['POST', /^\/api\/intents$/, ({ me, body }) => [201, market.createIntent(need(me), body)]],
     ['GET', /^\/api\/intents\/([^/]+)$/, ({ me, params }) => market.intent(params[0], me)],
     ['POST', /^\/api\/intents\/([^/]+)\/bids$/, ({ me, params, body }) => [201, market.placeBid(need(me), params[0], body)]],
@@ -78,7 +95,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     ['POST', /^\/api\/intents\/([^/]+)\/accept$/, ({ me, params, body }) => market.accept(need(me), params[0], body)],
     ['POST', /^\/api\/intents\/([^/]+)\/reject$/, ({ me, params, body }) => {
       const out = market.reject(need(me), params[0], body);
-      runJudge(params[0]).catch((e) => console.error('[judge]', e));
+      startJudge(params[0]);
       return out;
     }],
     ['POST', /^\/api\/intents\/([^/]+)\/cancel$/, ({ me, params }) => market.cancel(need(me), params[0])],
@@ -96,7 +113,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
 
   const pages = [
     [/^\/$/, () => views.home(market)],
-    [/^\/intents$/, ({ query }) => views.intents(market, query.get('status') || 'open')],
+    [/^\/intents$/, ({ query }) => views.intents(market, query.get('status') ?? 'open', query.get('tag') || '', query.get('q') || '')],
     [/^\/i\/([^/]+)$/, ({ params }) => views.intentPage(market, params[0])],
     [/^\/post$/, () => views.postPage()],
     [/^\/join$/, () => views.joinPage()],
@@ -124,11 +141,12 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
       return json(res, 200, { name: 'Bountyhall', api: `${origin}/api`, docs: `${origin}/solver.md`, receipt_signing: { algorithm: 'ed25519', public_key_spki_base64: market.publicKeyDer } });
     }
     if (path === '/api/stream') return openStream(req, res);
+    if (path === '/mcp') return handleMcp(req, res);
 
     if (path.startsWith('/api/')) {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
       if (req.method === 'OPTIONS') return send(res, 204, '');
       try {
         const route = api.find(([m, re]) => m === req.method && re.test(path));
@@ -138,7 +156,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
         }
         const me = market.authenticate(bearer(req));
         if (req.method !== 'GET' && me && !writeLimit(me.id)) throw new HttpError(429, 'slow down: too many writes this minute', 'rate_limited');
-        const body = req.method === 'POST' ? await readJson(req) : {};
+        const body = req.method === 'POST' || req.method === 'PATCH' ? await readJson(req) : {};
         const out = await route[2]({ req, me, body, ip, query: url.searchParams, params: path.match(route[1]).slice(1) });
         const [status, payload] = Array.isArray(out) ? out : [200, out];
         return json(res, status, payload);
@@ -161,6 +179,33 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     }
   }
 
+  // MCP over Streamable HTTP, stateless: each POST carries one JSON-RPC message
+  // (or a batch) and gets a JSON reply. There is no server-initiated stream.
+  async function handleMcp(req, res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id');
+    if (req.method === 'OPTIONS') return send(res, 204, '');
+    if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(res, 405, 'method not allowed', 'text/plain'); }
+    const key = bearer(req);
+    const me = market.authenticate(key);
+    if (key && !me) return json(res, 401, { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'invalid API key' } });
+    if (me && !writeLimit(me.id)) return json(res, 429, { jsonrpc: '2.0', id: null, error: { code: -32002, message: 'rate limited' } });
+    let body;
+    try { body = await readJson(req, { allowArray: true }); } catch { return json(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }); }
+    const hooks = { onReject: startJudge };
+    try {
+      if (Array.isArray(body)) {
+        const out = body.map((m) => handleRpc(market, me, m, hooks)).filter(Boolean);
+        return out.length ? json(res, 200, out) : send(res, 202, '');
+      }
+      const out = handleRpc(market, me, body, hooks);
+      return out ? json(res, 200, out) : send(res, 202, '');
+    } catch (err) {
+      console.error(err);
+      return json(res, 500, { jsonrpc: '2.0', id: body?.id ?? null, error: { code: -32603, message: 'internal error' } });
+    }
+  }
+
   function openStream(req, res) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write(': hello\n\n');
@@ -173,7 +218,8 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     handle(req, res).catch((err) => { console.error(err); if (!res.headersSent) send(res, 500, 'internal error', 'text/plain'); });
   });
   server.on('close', () => { if (sweeper) clearInterval(sweeper); for (const s of streams) s.end(); db.close(); });
-  return { server, market, db };
+  const settleWebhooks = () => Promise.all([...webhookJobs]);
+  return { server, market, db, settleWebhooks };
 }
 
 function need(me) {
@@ -200,7 +246,7 @@ function send(res, status, body, type) {
 function json(res, status, payload) {
   send(res, status, JSON.stringify(payload), 'application/json; charset=utf-8');
 }
-function readJson(req) {
+function readJson(req, { allowArray = false } = {}) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => {
@@ -212,6 +258,7 @@ function readJson(req) {
       if (!chunks.length) return resolve({});
       try {
         const v = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (allowArray && Array.isArray(v)) return resolve(v);
         resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {});
       } catch { reject(new HttpError(400, 'body must be valid JSON', 'invalid_json')); }
     });

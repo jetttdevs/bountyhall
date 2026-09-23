@@ -100,14 +100,39 @@ export class Market {
     return this.db.prepare('SELECT id, name, kind, bio, created_at FROM accounts WHERE key_hash = ?').get(sha256(apiKey)) || null;
   }
 
-  account(id) {
-    const a = this.db.prepare("SELECT id, name, kind, bio, created_at FROM accounts WHERE id = ? AND kind != 'system'").get(id);
-    return a ? { ...a, balance: this.balance(a.id), reputation: this.reputation(a.id) } : null;
+  account(id, { self = false } = {}) {
+    const a = this.db.prepare("SELECT id, name, kind, bio, webhook_url, created_at FROM accounts WHERE id = ? AND kind != 'system'").get(id);
+    if (!a) return null;
+    const { webhook_url, ...pub } = a;
+    return { ...pub, ...(self ? { webhook_url } : {}), balance: this.balance(a.id), reputation: this.reputation(a.id) };
   }
 
   accountByName(name) {
     const a = this.db.prepare("SELECT id FROM accounts WHERE name = ? AND kind != 'system'").get(name);
     return a ? this.account(a.id) : null;
+  }
+
+  // Update your own profile. webhook_url is validated by the caller (server).
+  updateProfile(me, { bio, webhook_url }) {
+    if (bio !== undefined) this.db.prepare('UPDATE accounts SET bio = ? WHERE id = ?').run(str(bio, 'bio', { min: 0, max: 280, required: false }), me.id);
+    if (webhook_url !== undefined) this.db.prepare('UPDATE accounts SET webhook_url = ? WHERE id = ?').run(webhook_url || null, me.id);
+    return this.account(me.id, { self: true });
+  }
+
+  webhookUrl(accountId) {
+    return this.db.prepare('SELECT webhook_url FROM accounts WHERE id = ?').get(accountId)?.webhook_url || null;
+  }
+
+  // Who is involved in an intent: the poster and, once awarded, the winner.
+  participants(intentId) {
+    const i = this.db.prepare('SELECT poster_id, awarded_bid_id FROM intents WHERE id = ?').get(intentId);
+    if (!i) return null;
+    const solver = i.awarded_bid_id ? this.db.prepare('SELECT solver_id FROM bids WHERE id = ?').get(i.awarded_bid_id)?.solver_id : null;
+    return { poster_id: i.poster_id, solver_id: solver || null };
+  }
+
+  sign(bytes) {
+    return edSign(null, Buffer.from(bytes), this.signingKey).toString('base64');
   }
 
   // Solver reputation: Laplace-smoothed share of value delivered, plus ratings.
@@ -175,7 +200,7 @@ export class Market {
     });
   }
 
-  listIntents({ status, limit = 50, poster, solver } = {}) {
+  listIntents({ status, limit = 50, poster, solver, tag, q } = {}) {
     const where = [];
     const args = [];
     if (status === 'active') where.push("i.status IN ('open', 'awarded', 'delivered', 'disputed')");
@@ -183,6 +208,11 @@ export class Market {
     else if (status) where.push('i.status = ?'), args.push(status);
     if (poster) where.push('i.poster_id = ?'), args.push(poster);
     if (solver) where.push('i.awarded_bid_id IN (SELECT id FROM bids WHERE solver_id = ?)'), args.push(solver);
+    if (tag) where.push("(',' || i.tags || ',') LIKE ? ESCAPE '\\'"), args.push(`%,${escapeLike(String(tag).toLowerCase())},%`);
+    if (q && String(q).trim()) {
+      const like = `%${escapeLike(String(q).trim().slice(0, 100))}%`;
+      where.push("(i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')"), args.push(like, like);
+    }
     const sql = `SELECT i.*, a.name AS poster_name,
         (SELECT COUNT(*) FROM bids b WHERE b.intent_id = i.id AND b.status != 'withdrawn') AS bid_count
       FROM intents i JOIN accounts a ON a.id = i.poster_id
@@ -284,13 +314,7 @@ export class Market {
         ? this.db.prepare("SELECT * FROM bids WHERE id = ? AND intent_id = ? AND status = 'pending'").get(String(bidId), intentId)
         : this.#bestBid(i);
       if (!bid) throw new HttpError(404, bidId ? 'bid not found or not pending' : 'there are no bids to award', 'not_found');
-      const t = now();
-      this.db.prepare("UPDATE bids SET status = 'won', updated_at = ? WHERE id = ?").run(t, bid.id);
-      this.db.prepare("UPDATE bids SET status = 'lost', updated_at = ? WHERE intent_id = ? AND id != ? AND status = 'pending'").run(t, intentId, bid.id);
-      this.#setStatus(intentId, 'awarded', { awarded_bid_id: bid.id, deliver_deadline: t + bid.eta_hours * HOUR });
-      const refund = i.budget - bid.price;
-      if (refund > 0) this.#transfer([[SYS.escrow, -refund], [i.poster_id, refund]], 'budget refund (award below budget)', intentId);
-      this.#event('intent.awarded', intentId, poster?.id ?? null, { solver_id: bid.solver_id, price: bid.price, auto: !bidId });
+      this.#awardBid(i, bid, poster?.id ?? null, !bidId);
       return this.intent(intentId, poster);
     });
   }
@@ -387,7 +411,7 @@ export class Market {
     this.db.prepare('INSERT INTO verdicts (id, intent_id, judge, solver_share, rationale, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(newId('vrd'), i.id, judge, share, rationale, t);
     this.#setStatus(i.id, status, { solver_share: share, rating });
     const payload = JSON.stringify({ v: 1, intent_id: i.id, poster_id: i.poster_id, solver_id: bid.solver_id, price: bid.price, solver_share: share, to_solver: toSolver, fee, refund, judge, status, settled_at: t });
-    const signature = edSign(null, Buffer.from(payload), this.signingKey).toString('base64');
+    const signature = this.sign(payload);
     const receiptId = newId('rcpt');
     this.db.prepare('INSERT INTO receipts (id, intent_id, payload, signature, created_at) VALUES (?, ?, ?, ?, ?)').run(receiptId, i.id, payload, signature, t);
     this.#event(`intent.${status}`, i.id, null, { solver_share: share, to_solver: toSolver });
@@ -421,7 +445,7 @@ export class Market {
       if (i.status !== 'open') return;
       const hasBids = this.db.prepare("SELECT COUNT(*) AS c FROM bids WHERE intent_id = ? AND status = 'pending'").get(i.id).c > 0;
       if (!hasBids) return this.#closeUnawarded(i, 'expired');
-      if (i.auto_award) return this.#autoAwardInTx(i);
+      if (i.auto_award) return this.#awardBid(i, this.#bestBid(i), null, true);
       if (t >= i.bid_deadline + this.staleOpenHours * HOUR) return this.#closeUnawarded(i, 'expired');
       throw new HttpError(409, 'waiting on the poster');
     });
@@ -431,15 +455,16 @@ export class Market {
     return changed;
   }
 
-  #autoAwardInTx(i) {
-    const bid = this.#bestBid(i);
+  // Mark the winner, close the other bids, start the delivery clock and refund
+  // the part of the budget the winning price does not use.
+  #awardBid(i, bid, actorId, auto) {
     const t = now();
     this.db.prepare("UPDATE bids SET status = 'won', updated_at = ? WHERE id = ?").run(t, bid.id);
     this.db.prepare("UPDATE bids SET status = 'lost', updated_at = ? WHERE intent_id = ? AND id != ? AND status = 'pending'").run(t, i.id, bid.id);
     this.#setStatus(i.id, 'awarded', { awarded_bid_id: bid.id, deliver_deadline: t + bid.eta_hours * HOUR });
     const refund = i.budget - bid.price;
     if (refund > 0) this.#transfer([[SYS.escrow, -refund], [i.poster_id, refund]], 'budget refund (award below budget)', i.id);
-    this.#event('intent.awarded', i.id, null, { solver_id: bid.solver_id, price: bid.price, auto: true });
+    this.#event('intent.awarded', i.id, actorId, { solver_id: bid.solver_id, price: bid.price, auto });
   }
 
   events({ after = 0, limit = 50 } = {}) {
@@ -462,6 +487,8 @@ export class Market {
     };
   }
 }
+
+const escapeLike = (v) => v.replace(/[\\%_]/g, (c) => '\\' + c);
 
 function normalizeTags(tags) {
   if (!tags) return '';

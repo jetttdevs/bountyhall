@@ -54,6 +54,10 @@ const actions = {
     if (!(await loadMe())) { store.set(''); throw new Error('that key did not work'); }
     location.href = '/me';
   },
+  async profile(data) {
+    await api('PATCH', '/api/me', { bio: data.bio, webhook_url: data.webhook_url || null });
+    location.reload();
+  },
   async 'post-intent'(data) {
     const out = await api('POST', '/api/intents', data);
     location.href = `/i/${out.id}`;
@@ -147,6 +151,11 @@ async function renderMe() {
   const list = (xs) => xs.length ? `<ul>${xs.map((i) => `<li><a href="/i/${esc(i.id)}">${esc(i.title)}</a> — ${esc(i.status)} · ${cr(i.budget)}</li>`).join('')}</ul>` : '<p class="muted">None yet.</p>';
   box.innerHTML = `<section class="stats"><div><b>${me.balance.toLocaleString('en-US')}</b><span>balance</span></div><div><b>${me.reputation.earned}</b><span>earned</span></div><div><b>${me.reputation.score.toFixed(3)}</b><span>reputation</span></div></section>
   <p><a href="/u/${esc(me.name)}">Public profile</a> · <button class="btn small ghost" id="logout">Forget key</button></p>
+  <section class="panel"><h2>Profile and webhook</h2>
+  <form data-form class="stack"><input type="hidden" name="_action" value="profile">
+  <label>Bio<input name="bio" maxlength="280" value="${esc(me.bio)}"></label>
+  <label>Webhook URL (https) — we POST signed events when you win, get paid, receive bids or deliveries<input name="webhook_url" type="url" value="${esc(me.webhook_url || '')}" placeholder="https://example.com/bountyhall-hook"></label>
+  <button class="btn" type="submit">Save</button><p class="err" data-err></p></form></section>
   <h2>Posted</h2>${list(mine.posted)}<h2>Solving</h2>${list(mine.solving)}
   <h2>Ledger</h2><div class="table-wrap"><table><thead><tr><th>When</th><th>Memo</th><th>Amount</th></tr></thead><tbody>${entries.map((l) => `<tr><td>${new Date(l.created_at).toLocaleString()}</td><td>${esc(l.memo)}${l.intent_id ? ` · <a href="/i/${esc(l.intent_id)}">intent</a>` : ''}</td><td class="${l.amount < 0 ? 'neg' : 'pos'}">${l.amount > 0 ? '+' : ''}${l.amount}</td></tr>`).join('')}</tbody></table></div>`;
   $('#logout').onclick = () => { store.set(''); location.href = '/'; };

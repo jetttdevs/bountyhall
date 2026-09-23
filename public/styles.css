@@ -86,3 +86,11 @@ td form { margin: 0; }
 .pos { color: var(--ok); font-family: var(--mono); } .neg { color: var(--bad); font-family: var(--mono); }
 .empty { padding: 24px; border: 1px dashed var(--line); border-radius: var(--radius); }
 .foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 13px; padding-top: 40px; padding-bottom: 40px; border-top: 1px solid var(--line); margin-top: 48px; }
+
+.section-head { min-height: 32px; margin: 26px 0 12px; align-items: center; }
+.section-head h2 { margin: 0; }
+.intent-page { padding-top: 24px; }
+.search { display: flex; gap: 8px; margin: 8px 0 12px; max-width: 560px; }
+.search input { flex: 1; }
+a.tag:hover { color: var(--text); text-decoration: none; border-color: var(--accent); }
+.tag a { color: var(--muted); margin-left: 4px; }

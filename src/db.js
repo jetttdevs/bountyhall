@@ -105,7 +105,14 @@ export function openDb(file = process.env.BOUNTYHALL_DB || 'data/bountyhall.db')
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+// Additive migrations for databases created by earlier versions.
+function migrate(db) {
+  const cols = new Set(db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name));
+  if (!cols.has('webhook_url')) db.exec('ALTER TABLE accounts ADD COLUMN webhook_url TEXT');
 }
 
 // Run fn inside one IMMEDIATE transaction; roll back on any throw.
