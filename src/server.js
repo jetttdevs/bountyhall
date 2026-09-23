@@ -10,6 +10,7 @@ import { judgeDispute, judgeEnabled } from './judge.js';
 import { HttpError, MINUTE } from './util.js';
 import * as views from './views.js';
 import { solverDoc } from './solver-doc.js';
+import * as docs from './docs.js';
 import { handleRpc } from './mcp.js';
 import { createDispatcher, validateWebhookUrl } from './webhooks.js';
 import { Payments, paymentsConfigFromEnv } from './payments.js';
@@ -50,6 +51,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
   const market = new Market(db, tokenMode ? { ...marketOpts, signupCredits: 0 } : marketOpts);
   const payments = tokenMode ? new Payments(market, payOpts.chain ?? createChain(payCfg), payCfg) : null;
   views.setUnit(tokenMode ? payCfg.symbol : 'cr');
+  views.setOrigin(process.env.PUBLIC_URL || '');
   const pollMs = payOpts.pollMs ?? Number(process.env.CHAIN_POLL_MS ?? 15000);
   const poller = payments && pollMs ? setInterval(() => payments.poll(), pollMs) : null;
   poller?.unref();
@@ -123,6 +125,17 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     return { version: VERSION, uptime_s: Math.round((Date.now() - STARTED) / 1000), payments: payments ? 'token' : 'credits', ok: checks.every((c) => c.level !== 'error'), checks };
   }
 
+  const docVars = (origin) => docs.docVars({ origin, pay: payments?.publicConfig(), feeBps: market.feeBps, signupCredits: market.signupCredits });
+
+  // What anyone may know about the service's health (no secrets, no balances).
+  function publicStatus() {
+    const up = Math.round((Date.now() - STARTED) / 1000);
+    const uptime = up > 86400 ? `${Math.floor(up / 86400)}d ${Math.floor((up % 86400) / 3600)}h` : up > 3600 ? `${Math.floor(up / 3600)}h ${Math.floor((up % 3600) / 60)}m` : `${Math.floor(up / 60)}m`;
+    const pc = payments?.publicConfig();
+    const p = pc ? { symbol: pc.symbol, chain_name: pc.chain_name, ready: pc.ready && !payments.lastError, block: db.prepare("SELECT v FROM meta WHERE k = 'chain_cursor'").get()?.v ?? null } : null;
+    return { ok: !p || p.ready, version: VERSION, uptime, uptime_s: up, judge: judgeEnabled() ? 'claude' : 'admin', house_agent: house ? house.me.name : null, payments: p };
+  }
+
   const pay = () => {
     if (!payments) throw new HttpError(404, 'on-chain payments are not enabled on this server', 'payments_disabled');
     return payments;
@@ -167,6 +180,7 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     ['POST', /^\/api\/intents\/([^/]+)\/cancel$/, ({ me, params }) => market.cancel(need(me), params[0])],
     ['GET', /^\/api\/receipts\/([^/]+)$/, ({ params }) => market.receipt(params[0])],
     ['GET', /^\/api\/events$/, ({ query }) => ({ events: market.events({ after: query.get('after'), limit: query.get('limit') }) })],
+    ['GET', /^\/api\/status$/, () => publicStatus()],
     ['GET', /^\/api\/payments$/, () => (payments ? payments.publicConfig() : { mode: 'credits', symbol: 'cr' })],
     ['GET', /^\/api\/wallet$/, ({ me }) => {
       const p = pay(); need(me);
@@ -221,7 +235,14 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
     [/^\/me$/, () => views.mePage()],
     [/^\/agents$/, () => views.agentsPage(market)],
     [/^\/u\/([^/]+)$/, ({ params }) => views.profilePage(market, decodeURIComponent(params[0]))],
-    [/^\/docs$/, ({ origin }) => views.docsPage(origin, payments?.publicConfig())],
+    [/^\/docs(?:\/([a-z-]+))?$/, ({ params, origin }) => {
+      const page = docs.docPage(params[0] || 'introduction', docVars(origin));
+      if (!page) throw new HttpError(404, 'not found');
+      return views.docsPage(page, docs.SECTIONS, docs.hrefFor, docs.titleFor);
+    }],
+    [/^\/about$/, () => views.aboutPage({ stats: market.stats(), pay: payments?.publicConfig(), feeBps: market.feeBps })],
+    [/^\/rules$/, () => views.rulesPage({ pay: payments?.publicConfig(), feeBps: market.feeBps })],
+    [/^\/status$/, () => views.statusPage(publicStatus())],
     [/^\/wallet$/, () => views.walletPage(payments?.publicConfig())],
     [/^\/admin$/, () => views.adminPage(Boolean(payments))],
   ];
@@ -238,6 +259,21 @@ export function createApp({ dbFile, market: marketOpts = {}, sweepMs = 15000, ju
       const [file, type] = STATIC[path];
       res.setHeader('Cache-Control', 'public, max-age=300');
       return send(res, 200, readFileSync(join(ROOT, file)), type);
+    }
+    const raw = path.match(/^\/docs\/([a-z-]+)\.md$/);
+    if (raw) {
+      const md = docs.docMarkdown(raw[1], docVars(origin));
+      return md == null ? send(res, 404, 'not found', 'text/plain') : send(res, 200, md, 'text/markdown; charset=utf-8');
+    }
+    if (path === '/robots.txt') return send(res, 200, `User-agent: *\nDisallow: /admin\nDisallow: /api/\nAllow: /api/stats\nSitemap: ${origin}/sitemap.xml\n`, 'text/plain; charset=utf-8');
+    if (path === '/sitemap.xml') {
+      const urls = ['/', '/intents', '/agents', '/about', '/rules', '/status', '/post', '/join', ...docs.pageSlugs().map(docs.hrefFor)];
+      return send(res, 200, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map((u) => `<url><loc>${origin}${u}</loc></url>`).join('')}</urlset>`, 'application/xml; charset=utf-8');
+    }
+    if (path === '/llms.txt') {
+      const v = docVars(origin);
+      const lines = docs.SECTIONS.flatMap(([name, slugs]) => [`\n## ${name}\n`, ...slugs.map((sl) => `- [${docs.titleFor(sl)}](${origin}/docs/${sl}.md)`)]);
+      return send(res, 200, `# Bountyhall\n\n> The intent marketplace for AI agents: post an outcome with a budget, agents send sealed bids, the winner delivers, escrow pays on acceptance, and every payout has a signed receipt. Settles in ${v.unit}.\n\nAgents: start with ${origin}/solver.md, or connect the MCP server at ${origin}/mcp.\n${lines.join('\n')}\n`, 'text/plain; charset=utf-8');
     }
     if (path === '/solver.md' || path === '/skill.md') return send(res, 200, solverDoc(origin, payments?.publicConfig()), 'text/markdown; charset=utf-8');
     if (path === '/.well-known/bountyhall.json') {

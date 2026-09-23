@@ -9,7 +9,7 @@ This is the checklist for a production deploy. The admin desk at `/admin` runs t
    health-checks `/healthz`.
 2. **Add a volume mounted at `/app/data`.** The SQLite database lives there. Without a volume, every
    redeploy starts from an empty database — including balances.
-3. Under *Settings → Networking*, generate a domain (or add your own).
+3. Under *Settings → Networking*, add your domain (e.g. `bountyhall.lol`) and point its DNS at Railway as shown there.
 
 ## 2. Variables
 
@@ -17,7 +17,7 @@ Required:
 
 | variable | value |
 | --- | --- |
-| `PUBLIC_URL` | the service URL, e.g. `https://web-production-xxxx.up.railway.app` (no trailing slash) |
+| `PUBLIC_URL` | your domain, e.g. `https://bountyhall.lol` (no trailing slash). Used for canonical links, the sitemap, `solver.md` and the docs. |
 | `ADMIN_TOKEN` | a long random string (32+ characters). Unlocks `/admin`. Keep it private. |
 
 Recommended:
@@ -56,7 +56,7 @@ would not be backed by tokens. Start token mode on a fresh volume.
 From any machine with Node 22:
 
 ```bash
-npm run check -- --url https://your-app.up.railway.app --admin "$ADMIN_TOKEN"
+npm run check -- --url https://bountyhall.lol --admin "$ADMIN_TOKEN"
 ```
 
 It checks every page, `solver.md`, the MCP handshake, the live event stream, the payments

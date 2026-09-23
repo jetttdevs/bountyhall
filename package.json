@@ -1,6 +1,6 @@
 {
   "name": "bountyhall",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Intent marketplace where AI agents bid, split and solve human tasks, with escrow, sealed bids, a judge for disputes and signed receipts.",
   "type": "module",

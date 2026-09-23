@@ -41,7 +41,7 @@ await step('payments', async () => {
   if (!pay.ready) throw new Error(`token mode but the chain is not connected (decimals ${pay.decimals})`);
   return `${pay.symbol} on ${pay.chain_name} (${pay.chain_id}), treasury ${pay.deposit_address}, ${pay.decimals} decimals`;
 });
-for (const page of ['/', '/intents', '/agents', '/docs', '/post', '/join', '/me', '/admin', ...(pay?.mode === 'token' ? ['/wallet'] : [])]) {
+for (const page of ['/', '/intents', '/agents', '/docs', '/docs/api', '/docs/mcp', '/about', '/rules', '/status', '/post', '/join', '/me', '/admin', ...(pay?.mode === 'token' ? ['/wallet'] : [])]) {
   await step(`page ${page}`, async () => { const html = await get(page, { json: false }); if (!html.includes('Bountyhall')) throw new Error('unexpected page'); });
 }
 await step('solver.md', async () => {
@@ -51,6 +51,7 @@ await step('solver.md', async () => {
   if (origin && origin !== base) throw new Error(`advertises ${origin}; set PUBLIC_URL=${base}`);
   return origin ? `base URL ${origin}` : '';
 });
+await step('llms.txt and sitemap', async () => { const l = await get('/llms.txt', { json: false }); const m = await get('/sitemap.xml', { json: false }); if (!l.startsWith('# Bountyhall') || !m.includes('<urlset')) throw new Error('unexpected content'); });
 await step('well-known', async () => { const w = await get('/.well-known/bountyhall.json'); if (!w.receipt_signing?.public_key_spki_base64) throw new Error('no signing key'); });
 await step('MCP handshake', async () => {
   const r = await post('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'check', version: '1' } } });

@@ -98,3 +98,86 @@ a.tag:hover { color: var(--text); text-decoration: none; border-color: var(--acc
 .warnc { color: var(--warn); }
 table.checks td { padding: 6px 8px; }
 table.checks td:first-child { width: 24px; }
+
+/* ---------- v0.5: site chrome ---------- */
+.skip { position: absolute; left: -999px; top: 8px; background: var(--accent); color: var(--accent-ink); padding: 8px 12px; border-radius: 8px; z-index: 20; }
+.skip:focus { left: 8px; }
+.menu { display: none; background: none; border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 10px; font-size: 16px; cursor: pointer; }
+@media (max-width: 760px) {
+  .menu { display: inline-block; }
+  .nav nav { display: none; width: 100%; flex-direction: column; align-items: flex-start; gap: 10px; padding: 8px 0 14px; }
+  .nav nav.open { display: flex; }
+}
+main.wide { max-width: 1320px; }
+.eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: 12px; font-weight: 700; color: var(--accent); margin: 0 0 10px; }
+.band { margin: 56px 0 8px; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 48px 0 8px; }
+@media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+.audience h2 { margin-top: 0; font-size: 22px; }
+.ticks { list-style: none; padding: 0; margin: 12px 0 18px; display: flex; flex-direction: column; gap: 8px; }
+.ticks li { padding-left: 26px; position: relative; }
+.ticks li::before { content: '✓'; position: absolute; left: 0; color: var(--ok); font-weight: 700; }
+.small-code { font-size: 12px; margin: 0 0 14px; }
+.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 12px 0 16px; }
+.feature { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.feature p { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+.cta { text-align: center; margin: 56px 0 0; padding: 32px 18px; }
+.cta .row { justify-content: center; }
+.center { text-align: center; }
+.center .row { justify-content: center; }
+
+.site-foot { border-top: 1px solid var(--line); margin-top: 64px; padding: 36px 0 20px; }
+.foot-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 24px; }
+@media (max-width: 760px) { .foot-grid { grid-template-columns: 1fr 1fr; } }
+.foot-grid h4 { margin: 4px 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.foot-grid a:not(.brand) { display: block; color: var(--text); font-size: 14px; margin: 6px 0; }
+.foot-base { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--line); margin-top: 24px; padding-top: 16px; }
+
+/* ---------- prose pages (about, rules, status) ---------- */
+.prose { max-width: 760px; margin: 32px auto 0; }
+.prose h1 { font-size: clamp(28px, 4.5vw, 40px); }
+.prose h2 { margin-top: 36px; font-size: 22px; }
+.prose p, .prose li { font-size: 16px; line-height: 1.7; }
+.prose ul { padding-left: 20px; }
+.prose ul.ticks { padding-left: 0; }
+
+/* ---------- docs ---------- */
+.docs { display: grid; grid-template-columns: 230px minmax(0, 1fr) 210px; gap: 36px; margin-top: 24px; align-items: start; }
+@media (max-width: 1100px) { .docs { grid-template-columns: 220px minmax(0, 1fr); } .doc-toc { display: none; } }
+@media (max-width: 760px) { .docs { grid-template-columns: 1fr; gap: 12px; } }
+.doc-nav, .doc-toc { position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow: auto; }
+.doc-nav summary { display: none; cursor: pointer; font-weight: 600; padding: 10px 0; }
+@media (max-width: 760px) { .doc-nav { position: static; max-height: none; border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; } .doc-nav summary { display: block; } }
+.doc-group { margin-bottom: 18px; }
+.doc-group h4, .doc-toc h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+.doc-group a { display: block; color: var(--text); padding: 5px 10px; border-radius: 8px; font-size: 14px; }
+.doc-group a:hover { background: var(--panel); text-decoration: none; }
+.doc-group a.on { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+.doc-toc a { display: block; color: var(--muted); font-size: 13px; padding: 4px 0; }
+.doc-toc a:hover { color: var(--text); }
+.doc { min-width: 0; }
+.doc h1 { font-size: clamp(28px, 4vw, 38px); margin-top: 8px; }
+.doc h2 { font-size: 22px; margin-top: 40px; padding-top: 12px; border-top: 1px solid var(--line); }
+.doc h3 { font-size: 17px; margin-top: 28px; }
+.doc h2, .doc h3 { scroll-margin-top: 80px; }
+.doc p, .doc li { font-size: 15.5px; line-height: 1.75; }
+.doc ul, .doc ol { padding-left: 22px; }
+.doc li { margin: 4px 0; }
+.doc code { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 13px; }
+.doc pre code { background: none; border: 0; padding: 0; }
+.doc hr { border: 0; border-top: 1px solid var(--line); margin: 28px 0; }
+.anchor { color: var(--line); font-weight: 400; margin-left: 6px; opacity: 0; }
+h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+.codeblock { position: relative; margin: 14px 0; }
+.codeblock pre { background: #070a10; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; margin: 0; white-space: pre; }
+.codeblock .copy { position: absolute; top: 8px; right: 8px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; padding: 3px 8px; cursor: pointer; }
+.codeblock .copy:hover { color: var(--text); }
+.callout { margin: 16px 0; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line); border-left: 4px solid var(--info); background: var(--panel); }
+.callout.warning { border-left-color: var(--warn); }
+.callout.tip { border-left-color: var(--ok); }
+.callout p { margin: 6px 0; }
+.crumbs { margin: 0; }
+.pager { display: flex; justify-content: space-between; gap: 12px; margin-top: 48px; border-top: 1px solid var(--line); padding-top: 20px; }
+.pager a { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; min-width: 200px; color: var(--text); }
+.pager a:hover { border-color: var(--accent); text-decoration: none; }
+.pager a.next { text-align: right; margin-left: auto; }

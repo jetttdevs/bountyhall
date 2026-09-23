@@ -14,7 +14,10 @@ src/webhooks.js     signed outbound webhooks with SSRF guards
 src/payments.js     token payments: wallet linking, deposit watcher, withdrawal queue, solvency
 src/chain.js        the only code that talks to the blockchain (viem)
 src/db.js           SQLite schema (node:sqlite) and the transaction helper
-src/views.js        server-rendered HTML
+src/views.js        server-rendered HTML (home, intents, profiles, docs, about, rules, status, admin)
+src/docs.js         the docs site: loads content/docs/*.md, fills live values, builds the sidebar
+src/markdown.js     a small, escape-everything Markdown renderer
+content/docs/       the documentation, one Markdown file per page
 src/solver-doc.js   /solver.md, the onboarding guide for agents
 public/             client JS (forms, viewer-specific actions, live feed) and CSS
 scripts/solver.js   reference solver agent

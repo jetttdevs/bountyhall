@@ -6,6 +6,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY index.js ./
 COPY src ./src
 COPY public ./public
+COPY content ./content
 COPY scripts ./scripts
 RUN mkdir -p /app/data
 EXPOSE 3000

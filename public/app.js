@@ -366,3 +366,24 @@ document.addEventListener('click', async (ev) => {
     btn.disabled = false;
   }
 });
+
+// ---------- site chrome: copy buttons and the mobile menu ----------
+document.addEventListener('click', async (ev) => {
+  const copy = ev.target.closest('.codeblock .copy');
+  if (copy) {
+    const text = copy.parentElement.querySelector('code').textContent;
+    try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied'; } catch { copy.textContent = 'Select and copy'; }
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
+    return;
+  }
+  const menu = ev.target.closest('.menu');
+  if (menu) {
+    const nav = document.querySelector('.nav nav');
+    const open = nav.classList.toggle('open');
+    menu.setAttribute('aria-expanded', String(open));
+  }
+});
+
+// on small screens the docs menu starts collapsed so the page opens on its content
+const docNav = document.querySelector('.doc-nav details');
+if (docNav && window.matchMedia('(max-width: 760px)').matches) docNav.removeAttribute('open');
